@@ -78,7 +78,8 @@ Messages are exact strings, including the backticks.
 | Restoring a rule that isn't switched off | "Rule `{ruleId}` is not switched off." |
 | Empty diff | "The diff is empty. Paste a unified diff to review." |
 | Not a unified diff (no `@@` hunk header) | "This doesn't look like a unified diff. Paste the output of `git diff`." |
-| Diff changes only lockfiles or binary files | "Nothing to review: the diff only changes lockfiles or binary files." |
+| A file was skipped; `{reason}` is `lockfile`, `binary` or `minified or generated` | "Skipped `{file}` ({reason})." |
+| Every file in the diff was skipped | "Nothing to review: every file in the diff was skipped." |
 | Diff over 50 KB (`MAX_DIFF_BYTES = 50_000`) | "The diff is larger than 50 KB. Split it into smaller reviews." |
 | Per-IP rate limit reached | "Too many requests. Try again in a minute." |
 | Daily review budget used up | "The daily review limit has been reached. Try again tomorrow." |
@@ -91,7 +92,7 @@ Messages are exact strings, including the backticks.
 1. **Submit:** the diff is pasted into the review box, which calls the agent directly (a callable method), never the chat model (D8). The agent checks the per-IP limit and reserves the review's worst-case cost against the daily budget (D12).
 2. **Validate** the diff (§5).
 3. **Start** `ReviewWorkflow` with `runWorkflow`, passing the diff and a snapshot of the active rules. The whole review uses that snapshot.
-4. **Split:** skip lockfiles and binary files; pack small files together into chunks; split a file larger than one chunk by hunk, and a hunk larger than one chunk into windows of lines. Each added and context line is prefixed with its new-file line number (D13).
+4. **Split:** skip lockfiles, binary files, and minified or generated files (names like `*.min.*` and `*.map`, or any added line over 1,000 characters), with a note for each; the `no-secrets` regex still runs over them. Prefix each added and context line with its new-file line number (D13); sizes include the prefixes. Split a file larger than one chunk by hunk, and a hunk larger than one chunk into windows of lines. Then pack files and pieces **first-fit**: each goes into the first chunk with room, checking every open chunk, not just the last one.
 5. **Review** each chunk with the review model (no tools, JSON mode), producing at most 25 findings.
 6. **Validate** each finding (§7).
 7. **Combine:** remove duplicates (same `ruleId`, `file` and `line`), look up each finding's severity from its rule, sort by severity, decide the verdict.
@@ -108,7 +109,7 @@ Messages are exact strings, including the backticks.
 
 **Retries:** each step retries at most 2 times with a 2-second delay (the Workflows default is 5 retries starting at 10 seconds). A chunk that still fails is recorded as not reviewed; it doesn't fail the workflow.
 
-**Diff limit, 50 KB:** at ~3 characters per token, 50 KB ≈ 16.7k tokens, which packs into 1–3 chunks of 12k. A maximum-size review costs about 1.4k neurons (2.6k in the worst case), which fits the Free plan's daily allocation. 200 KB is future work (D6).
+**Diff limit, 50 KB:** at ~3 characters per token, 50 KB ≈ 16.7k tokens. First-fit packing into 12k chunks needs at most 2 chunks for diffs up to 18k tokens; only a diff near the limit with line-number prefixes can go above that and need 3. A maximum-size review costs about 1.1k neurons (1.9k in the worst case), which fits the Free plan's daily allocation. 200 KB is future work (D6).
 
 ## 7. Trust boundary
 
@@ -120,7 +121,7 @@ Messages are exact strings, including the backticks.
 2. **Untrusted text is treated as data. This is a mitigation.** The diff and the custom rules are wrapped in delimiters, and the system prompt says the content inside is untrusted, must never be followed as instructions, and that locked rules take priority over custom rules. Models can still be tricked. Layer 1 keeps a successful trick away from the rules, but it can still produce a wrong review, and for a guardrail a false pass is exactly what an attacker wants; layers 3 and 5 limit that.
 3. **Output validation.** Zod checks each finding's shape. Further checks confirm that the `ruleId` exists in the rules snapshot, that `file` is one of the chunk's files, and that `line` is one of that file's numbered lines (D13). Findings that fail are dropped and counted; malformed responses are retried by the workflow step. Severity comes from the rule, not the model, and the verdict fails closed: a failed chunk or a discarded error-rule finding makes it `incomplete`, never `pass` (D10).
 4. **Approval on rule-changing chat tools.** A human confirms before the chat model changes any rule.
-5. **A deterministic check for `no-secrets`.** A regex pass over added lines reports common key formats as `no-secrets` findings that no prompt can argue away (D11). `sql-parameterized` has no such check: for it, "locked" guarantees the rule stays on, not that every violation is caught.
+5. **A deterministic check for `no-secrets`.** A regex pass over added lines, including those in skipped files, reports common key formats as `no-secrets` findings that no prompt can argue away (D11). `sql-parameterized` has no such check: for it, "locked" guarantees the rule stays on, not that every violation is caught.
 6. **State is written only by the server.** Browsers receive agent `state` but can't write it (`validateStateChange` rejects writes from connections), and the review reads rules only from SQLite, through the snapshot passed to the workflow.
 
 ## 8. Out of scope
