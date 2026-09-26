@@ -1,0 +1,25 @@
+name: gitleaks
+on:
+  pull_request: {}
+  push: {}
+  workflow_dispatch: {}
+concurrency:
+  group: gitleaks-${{ github.event_name }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  scan:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Full history, so a secret committed and later deleted is still caught
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Commenting on PRs needs write access; findings still fail the job
+          GITLEAKS_ENABLE_COMMENTS: false
