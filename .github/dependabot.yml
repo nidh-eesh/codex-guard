@@ -1,0 +1,7 @@
+version: 2
+updates:
+  # Bumps the pinned SHAs in .github/workflows along with their version comments
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

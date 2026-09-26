@@ -72,3 +72,18 @@ Build in this order, stop after each step so that I can review, test and commit.
 
 The three author-owned modules in AGENTS.md are mine. When you get to one, write the types, the function signature with a TODO body, and the Vitest cases you think it needs, then stop. Don't implement them. Once I've written them, build on top. Don't rely on memory for the SDK. Check the installed versions in node_modules before using runWorkflow, persistMessages, needsApproval or validateStateChange. If DESIGN.md asks for something the SDK doesn't support, stop and tell me instead of working around it.Ask before adding any dependency the starter doesn't already have. Don't commit. I'll do that.
 ````
+
+### 2026-09-26 17:32 UTC
+
+````text
+
+
+<pasted_content id="2b91">
+Before step 2, a few fixes.
+
+1. Pin every action in .github/workflows to a full commit SHA with a version comment, and add Dependabot for github-actions. In sanity-check.yml pin the Node version, use npm ci, and add permissions: contents: read.
+2. Remove /oauth/* from run_worker_first.
+3. Add to the AGENTS.md invariants: never pass options.clientTools to the model.
+4. Add vitest as a dev dependency. Nothing else yet.
+</pasted_content id="2b91">
+````
