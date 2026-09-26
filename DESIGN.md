@@ -4,12 +4,12 @@ A guardrail agent for engineering teams, built on Cloudflare. Each workspace sta
 
 ## 1. Required components
 
-| Component | What I use | Where in the code |
-|---|---|---|
-| LLM | Workers AI `@cf/meta/llama-3.3-70b-instruct-fp8-fast`, in two roles: the **chat model** (can call rule tools) and the **review model** (no tools; see §7). The model ID, context window, maximum output and prices live in one model config. | TODO after build |
-| Workflow / coordination | Cloudflare Workflows: `ReviewWorkflow`, an `AgentWorkflow` that the agent starts with `runWorkflow` when a diff is submitted. Steps: split → review each chunk → combine. Each step's result is persisted and the step is retried at most twice, so one failed chunk doesn't restart the review; a chunk that still fails makes the verdict `incomplete` (§6). | TODO after build |
-| Chat input | React chat UI → `useAgentChat` → WebSocket → the agent's `onChatMessage` (Agents SDK on Workers). Diffs go through a separate review box, not the chat (§6). | TODO after build |
-| Memory / state | The agent's SQLite database (Durable Object) is the source of truth; active rules are pushed to the browser through agent `state`. `validateStateChange` rejects state writes from browsers. | TODO after build |
+| Component               | What I use                                                                                                                                                                                                                                                                                                                                                     | Where in the code |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| LLM                     | Workers AI `@cf/meta/llama-3.3-70b-instruct-fp8-fast`, in two roles: the **chat model** (can call rule tools) and the **review model** (no tools; see §7). The model ID, context window, maximum output and prices live in one model config.                                                                                                                   | TODO after build  |
+| Workflow / coordination | Cloudflare Workflows: `ReviewWorkflow`, an `AgentWorkflow` that the agent starts with `runWorkflow` when a diff is submitted. Steps: split → review each chunk → combine. Each step's result is persisted and the step is retried at most twice, so one failed chunk doesn't restart the review; a chunk that still fails makes the verdict `incomplete` (§6). | TODO after build  |
+| Chat input              | React chat UI → `useAgentChat` → WebSocket → the agent's `onChatMessage` (Agents SDK on Workers). Diffs go through a separate review box, not the chat (§6).                                                                                                                                                                                                   | TODO after build  |
+| Memory / state          | The agent's SQLite database (Durable Object) is the source of truth; active rules are pushed to the browser through agent `state`. `validateStateChange` rejects state writes from browsers.                                                                                                                                                                   | TODO after build  |
 
 ## 2. Workspaces (agent instance naming)
 
@@ -26,10 +26,10 @@ A guardrail agent for engineering teams, built on Cloudflare. Each workspace sta
 
 **Layered storage:** the starter pack lives in code; each workspace stores only its own changes.
 
-| Where | Shape | Notes |
-|---|---|---|
-| Code: `STARTER_PACK` | `{ id, text, severity, locked }` | The only place `locked` exists. Custom rules are never locked. A rule gets a new ID when its meaning changes (D14). |
-| SQLite: `custom_rules` | `{ id, text, severity, createdAt }` | Rules the workspace added. IDs start with `c_`, so they can't collide with starter IDs. |
+| Where                       | Shape                                      | Notes                                                                                                               |
+| --------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| Code: `STARTER_PACK`        | `{ id, text, severity, locked }`           | The only place `locked` exists. Custom rules are never locked. A rule gets a new ID when its meaning changes (D14). |
+| SQLite: `custom_rules`      | `{ id, text, severity, createdAt }`        | Rules the workspace added. IDs start with `c_`, so they can't collide with starter IDs.                             |
 | SQLite: `disabled_defaults` | `{ ruleId, reason, ruleText, disabledAt }` | Switched-off recommended rules, with the rule text as it was when switched off. This table is the exception record. |
 
 **Active rules** = starter pack − disabled defaults + custom rules. Locked starter rules are always active, even if a `disabled_defaults` row names them, and rows whose ID is no longer in the starter pack are ignored. Computed from SQLite (the source of truth) and pushed to the browser as `state`. Updating the starter pack in code updates every workspace.
@@ -37,28 +37,29 @@ A guardrail agent for engineering teams, built on Cloudflare. Each workspace sta
 **Duplicates:** rule text is compared after trimming, collapsing whitespace and lowercasing, against active rules only, so the text of a switched-off default can be re-added as a custom rule (the override path in §8).
 
 **Limits**
+
 - Rule text: 10–200 characters (about 50 tokens; about 60 with ID and severity).
 - At most 50 active rules in total, including the starter pack. Every active rule goes into every review call: 50 × ~60 tokens ≈ 3k of the 24k-token context.
 
 **Starter pack**
 
-| ID | Rule | Severity | Locked |
-|---|---|---|---|
-| `no-secrets` | No secrets or API keys in code | error | yes |
-| `sql-parameterized` | SQL queries must be parameterized | error | yes |
-| `validate-input` | Validate external input at the boundary | error | no |
-| `no-sensitive-logs` | Don't log personal data or tokens | error | no |
-| `explicit-errors` | Handle errors explicitly; no empty `catch` blocks | warning | no |
-| `no-console-log` | No `console.log` left in production code | warning | no |
+| ID                  | Rule                                              | Severity | Locked |
+| ------------------- | ------------------------------------------------- | -------- | ------ |
+| `no-secrets`        | No secrets or API keys in code                    | error    | yes    |
+| `sql-parameterized` | SQL queries must be parameterized                 | error    | yes    |
+| `validate-input`    | Validate external input at the boundary           | error    | no     |
+| `no-sensitive-logs` | Don't log personal data or tokens                 | error    | no     |
+| `explicit-errors`   | Handle errors explicitly; no empty `catch` blocks | warning  | no     |
+| `no-console-log`    | No `console.log` left in production code          | warning  | no     |
 
 ## 4. Chat tools
 
-| Tool | Input | Approval | Why |
-|---|---|---|---|
-| `addRule` | `{ text: string (10–200 chars), severity: "error" \| "warning" }` | Yes | Any tool the chat model can call is a path for prompt injection; approval puts a human between the model and the rules. |
-| `listRules` | none | No | Read-only |
-| `removeRule` | `{ ruleId: string, reason?: string }` | Yes | Deletes a custom rule, or switches off a recommended default (reason required). Locked rules are refused. |
-| `restoreRule` | `{ ruleId: string }` | Yes | Switches a recommended default back on by deleting its `disabled_defaults` row. Every rule change goes through approval (D4). |
+| Tool          | Input                                                             | Approval | Why                                                                                                                           |
+| ------------- | ----------------------------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `addRule`     | `{ text: string (10–200 chars), severity: "error" \| "warning" }` | Yes      | Any tool the chat model can call is a path for prompt injection; approval puts a human between the model and the rules.       |
+| `listRules`   | none                                                              | No       | Read-only                                                                                                                     |
+| `removeRule`  | `{ ruleId: string, reason?: string }`                             | Yes      | Deletes a custom rule, or switches off a recommended default (reason required). Locked rules are refused.                     |
+| `restoreRule` | `{ ruleId: string }`                                              | Yes      | Switches a recommended default back on by deleting its `disabled_defaults` row. Every rule change goes through approval (D4). |
 
 Rules change only inside these tools' `execute`. Reviewing a diff is not a chat tool: diffs are submitted through the review box (§6, D8).
 
@@ -66,26 +67,26 @@ Rules change only inside these tools' `execute`. Reviewing a diff is not a chat 
 
 Messages are exact strings, including the backticks.
 
-| Case | Message |
-|---|---|
-| Rule text empty, or outside 10–200 characters | "Rule text must be between 10 and 200 characters." |
-| Duplicate rule | "A rule with this text already exists." |
-| Adding a 51st rule | "This workspace has 50 rules, the maximum. Remove one first." |
-| Unknown rule ID | "No rule with ID `{ruleId}` exists in this workspace." |
-| Removing or switching off a locked rule | "Rule `{ruleId}` is locked and can't be switched off." |
-| Switching off a recommended rule without a reason | "A reason is required to switch off a recommended rule." |
-| Switching off a rule that is already switched off | "Rule `{ruleId}` is already switched off." |
-| Restoring a rule that isn't switched off | "Rule `{ruleId}` is not switched off." |
-| Empty diff | "The diff is empty. Paste a unified diff to review." |
-| Not a unified diff (no `@@` hunk header) | "This doesn't look like a unified diff. Paste the output of `git diff`." |
-| A file was skipped; `{reason}` is `lockfile`, `binary` or `minified or generated` | "Skipped `{file}` ({reason})." |
-| Every file in the diff was skipped | "Nothing to review: every file in the diff was skipped." |
-| Diff over 50 KB (`MAX_DIFF_BYTES = 50_000`) | "The diff is larger than 50 KB. Split it into smaller reviews." |
-| Per-IP rate limit reached | "Too many requests. Try again in a minute." |
-| Daily review budget used up | "The daily review limit has been reached. Try again tomorrow." |
-| A chunk failed after its retries | "Review incomplete: {n} of {total} chunks couldn't be reviewed." |
-| A finding for an error-severity rule failed validation | "Review incomplete: {m} findings for error rules failed validation." |
-| Invalid workspace ID | "This workspace link is invalid." (shown by the browser; the server answers HTTP 400) |
+| Case                                                                              | Message                                                                               |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Rule text empty, or outside 10–200 characters                                     | "Rule text must be between 10 and 200 characters."                                    |
+| Duplicate rule                                                                    | "A rule with this text already exists."                                               |
+| Adding a 51st rule                                                                | "This workspace has 50 rules, the maximum. Remove one first."                         |
+| Unknown rule ID                                                                   | "No rule with ID `{ruleId}` exists in this workspace."                                |
+| Removing or switching off a locked rule                                           | "Rule `{ruleId}` is locked and can't be switched off."                                |
+| Switching off a recommended rule without a reason                                 | "A reason is required to switch off a recommended rule."                              |
+| Switching off a rule that is already switched off                                 | "Rule `{ruleId}` is already switched off."                                            |
+| Restoring a rule that isn't switched off                                          | "Rule `{ruleId}` is not switched off."                                                |
+| Empty diff                                                                        | "The diff is empty. Paste a unified diff to review."                                  |
+| Not a unified diff (no `@@` hunk header)                                          | "This doesn't look like a unified diff. Paste the output of `git diff`."              |
+| A file was skipped; `{reason}` is `lockfile`, `binary` or `minified or generated` | "Skipped `{file}` ({reason})."                                                        |
+| Every file in the diff was skipped                                                | "Nothing to review: every file in the diff was skipped."                              |
+| Diff over 50 KB (`MAX_DIFF_BYTES = 50_000`)                                       | "The diff is larger than 50 KB. Split it into smaller reviews."                       |
+| Per-IP rate limit reached                                                         | "Too many requests. Try again in a minute."                                           |
+| Daily review budget used up                                                       | "The daily review limit has been reached. Try again tomorrow."                        |
+| A chunk failed after its retries                                                  | "Review incomplete: {n} of {total} chunks couldn't be reviewed."                      |
+| A finding for an error-severity rule failed validation                            | "Review incomplete: {m} findings for error rules failed validation."                  |
+| Invalid workspace ID                                                              | "This workspace link is invalid." (shown by the browser; the server answers HTTP 400) |
 
 ## 6. Review workflow
 
@@ -103,6 +104,7 @@ Messages are exact strings, including the backticks.
 **Model output:** `{ ruleId, file, line, message, suggestion }`. The model doesn't report severity; it comes from the rule (D10).
 
 **Verdict:**
+
 - **fail** if any finding that survives validation violates an error-severity rule;
 - otherwise **incomplete** if a chunk failed after its retries or a finding for an error-severity rule was discarded, with both counts shown;
 - otherwise **pass**, listing warnings.
