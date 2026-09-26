@@ -56,3 +56,19 @@ Add D14.
 ````text
 Incorporate the proposed edits and add first-fit chunk packaging as norm
 ````
+
+### 2026-09-26 14:59 UTC
+
+````text
+Start the build. Read @DESIGN.md and @docs/DECISIONS.md first, @AGENTS.md has the rules for working on this repo. Nothing has been coded yet. Only the docs and starter template created with npm create cloudflare@latest -- starter-tmp --template cloudflare/agents-starter. 
+
+Build in this order, stop after each step so that I can review, test and commit.
+1. Cleanup: remove the example tools and the starter banner, add the model config module, switch to llama-3.3-70b-instruct-fp8-fast, add gitleaks to CI.
+2. Workspaces: /w/{uuid} routing, UUID check in onBeforeConnect and onBeforeRequest , reopening the last workspace from localstorage, the Referrer-Policy header, the invalid-link message.
+3. Rules: STARTER_PACK, the SQLite database, the four tools with approval, and state the state should be pushed to the browser, also validateStateChange
+4. Review: the review box, the callable method, diff validation, ReviewWorkflow with retries, storing reviews, the chat summary with only the validated fields.
+5. Cost controls: per-Ip rate limits and the daily limit in neuron budget
+6. README with setup and deploy steps, then deploy
+
+The three author-owned modules in AGENTS.md are mine. When you get to one, write the types, the function signature with a TODO body, and the Vitest cases you think it needs, then stop. Don't implement them. Once I've written them, build on top. Don't rely on memory for the SDK. Check the installed versions in node_modules before using runWorkflow, persistMessages, needsApproval or validateStateChange. If DESIGN.md asks for something the SDK doesn't support, stop and tell me instead of working around it.Ask before adding any dependency the starter doesn't already have. Don't commit. I'll do that.
+````
