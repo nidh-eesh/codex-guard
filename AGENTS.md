@@ -5,6 +5,7 @@ Instructions for AI coding agents working in this repo. `DESIGN.md` is the sourc
 ## Invariants - never break these
 
 - The review model gets **no tools**. Never pass tools to the review call.
+- The chat model's tools are defined on the server only. Never pass `options.clientTools` (tool schemas sent by the browser) to the model.
 - Diffs and review free text (`message`, `suggestion`) never reach the chat model.
 - Every review-model output is validated (Zod shape + `ruleId` exists + `file` is in the chunk + `line` is one of that file's numbered lines) before it is shown or stored.
 - Active rules always include every locked starter rule; locked rules can never be switched off or deleted.
