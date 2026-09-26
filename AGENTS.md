@@ -5,13 +5,14 @@ Instructions for AI coding agents working in this repo. `DESIGN.md` is the sourc
 ## Invariants - never break these
 
 - The review model gets **no tools**. Never pass tools to the review call.
-- Every model output is validated (Zod shape + `ruleId` exists + `line` inside the chunk) before it is shown or stored.
-- Locked rules can never be switched off or deleted.
-- `addRule` and `removeRule` always require human approval.
-- Workspace IDs are validated before being used as an agent instance name.
-- No secrets in code, logs, commits, or prompts. This repo follows its own starter pack.
-- The model ID lives in one config constant; never hard-code it elsewhere.
-- Use TextEncoder().encode(diff).length for input byte limit
+- Diffs and review free text (`message`, `suggestion`) never reach the chat model.
+- Every review-model output is validated (Zod shape + `ruleId` exists + `file` is in the chunk + `line` is one of that file's numbered lines) before it is shown or stored.
+- Active rules always include every locked starter rule; locked rules can never be switched off or deleted.
+- `addRule`, `removeRule` and `restoreRule` always require human approval; rules change only inside those tools' `execute`.
+- Workspace IDs are validated and lowercased before being used as an agent instance name.
+- No credentials in code or commits (gitleaks in CI). Never log diffs, findings, request paths or workspace IDs. Redact matched secrets in stored findings. This repo follows its own starter pack.
+- The model config (ID, context window, maximum output, prices) lives in one config module; never hard-code a model ID or context size elsewhere.
+- `MAX_DIFF_BYTES = 50_000`, checked with `TextEncoder().encode(diff).length`; the Zod schema uses the same check.
 
 ## Conventions
 
@@ -25,8 +26,8 @@ Instructions for AI coding agents working in this repo. `DESIGN.md` is the sourc
 
 The security and correctness-critical logic is written by the author, so every guarantee in `DESIGN.md` ##7 has a human owner. For these modules, agents review, explain, find bugs, and propose test cases; the implementation itself is the author's:
 
-- Active-rules resolution (starter pack − disabled defaults + custom rules)
-- Finding validation (Zod schema plus the `ruleId` and line-range checks)
+- Active-rules resolution (starter pack − disabled defaults + custom rules; locked rules always active)
+- Finding validation (Zod schema plus the `ruleId`, `file` and line checks)
 - Diff splitting and the per-call token budget
 
 ## Logging
