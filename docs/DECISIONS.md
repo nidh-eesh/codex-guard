@@ -113,3 +113,11 @@ One entry per design decision: what was decided, the options, and why. Newest la
 - **Decision:** (c). `disabled_defaults` also stores the rule text as it was when switched off.
 - **Why:** With (a), widening a rule silently widens every exemption, and nobody agreed to the new scope. With (b), fixing a typo switches the rule back on everywhere. With (c), a team decides again only when the rule actually changes, and the stored text shows exactly what they agreed to.
 - **Consequences:** A changed rule is on in every workspace until a team switches it off again with a new reason. `disabled_defaults` rows whose ID is no longer in `STARTER_PACK` are ignored by active-rules resolution. Whether an edit changes meaning is decided in code review of the starter pack.
+
+## D15 - Workspace IDs are accepted only in lowercase
+
+- **Context:** Durable Object names are case-sensitive, so `ABC…` and `abc…` would be two different workspaces. The design had the router hooks lowercase the ID, but the SDK (partyserver 0.5.8) picks the Durable Object from the URL before `onBeforeConnect` and `onBeforeRequest` run. A hook can reject a request but can't change which instance it reaches.
+- **Options:** (a) lowercase the URL in the Worker's `fetch` before `routeAgentRequest`, and validate in the hooks; (b) the browser lowercases, and the hooks accept only the lowercase form and answer anything else with HTTP 400.
+- **Decision:** (b).
+- **Why:** Either way, only lowercase names reach a Durable Object. (b) uses only the SDK's hooks, keeps the check in one place, and fails closed. Real clients never send uppercase, because the browser lowercases the link and fixes the URL bar before it connects.
+- **Consequences:** A hand-made request with an uppercase ID gets a 400, not a redirect. `WorkspaceId` (`z.uuidv4().lowercase()`) is shared by the browser and the Worker. Revisit if the SDK lets hooks change the instance name.

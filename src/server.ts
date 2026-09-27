@@ -3,6 +3,8 @@ import { routeAgentRequest } from "agents";
 import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
 import { convertToModelMessages, pruneMessages, streamText } from "ai";
 import { MODEL } from "./model-config";
+import { withReferrerPolicy } from "./http";
+import { rejectInvalidWorkspace } from "./workspace";
 
 export class ChatAgent extends AIChatAgent<Env> {
   maxPersistedMessages = 100;
@@ -30,11 +32,18 @@ export class ChatAgent extends AIChatAgent<Env> {
   }
 }
 
+// The instance name is the workspace ID. Hooks run before the Durable Object
+// is reached, for WebSocket upgrades and plain HTTP requests alike.
+const checkWorkspace = (_request: Request, lobby: { name: string }) =>
+  rejectInvalidWorkspace(lobby.name);
+
 export default {
   async fetch(request: Request, env: Env) {
-    return (
-      (await routeAgentRequest(request, env)) ||
-      new Response("Not found", { status: 404 })
-    );
+    const response =
+      (await routeAgentRequest(request, env, {
+        onBeforeConnect: checkWorkspace,
+        onBeforeRequest: checkWorkspace
+      })) ?? new Response("Not found", { status: 404 });
+    return withReferrerPolicy(response);
   }
 } satisfies ExportedHandler<Env>;

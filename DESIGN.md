@@ -16,7 +16,7 @@ A guardrail agent for engineering teams, built on Cloudflare. Each workspace sta
 - Opening the app without a workspace link creates a random, unguessable UUID. It becomes the agent instance name and appears in the URL (`/w/{uuid}`).
 - **Private by default, shareable by link:** anyone with the URL joins the same workspace (a capability URL).
 - A new tab with no link reopens the last workspace from `localStorage`.
-- The server validates and lowercases the UUID in the router hooks (`onBeforeConnect`, `onBeforeRequest`) before using it as an instance name. The browser runs the same check and shows the §5 message, because it can't read the status of a failed WebSocket handshake.
+- The browser lowercases the UUID, and the server accepts only the lowercase form: the router hooks (`onBeforeConnect`, `onBeforeRequest`) validate it before it is used as an instance name and answer anything else with HTTP 400. The hooks can't lowercase it themselves, because the SDK reads the instance name from the URL before they run (D15). The browser runs the same check and shows the §5 message, because it can't read the status of a failed WebSocket handshake.
 - No "does it exist?" check: a random UUID has 122 random bits, so collisions are not a practical concern, and addressing an instance by name creates it.
 - **The link is the credential:** responses send `Referrer-Policy: no-referrer`, and request paths and workspace IDs are never logged.
 - **Cost limits:** a per-IP rate limit on review submissions and chat turns, and a global daily budget of estimated neurons for reviews (D12).

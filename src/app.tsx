@@ -3,11 +3,13 @@ import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
 import { getToolName, isToolUIPart, type UIMessage } from "ai";
 import type { ChatAgent } from "./server";
+import { INVALID_WORKSPACE_MESSAGE, type WorkspaceRoute } from "./workspace";
 import {
   Badge,
   Button,
   Empty,
   InputArea,
+  LinkButton,
   PoweredByCloudflare,
   Surface,
   Switch,
@@ -28,6 +30,7 @@ import {
   CheckCircleIcon,
   XCircleIcon,
   BugIcon,
+  LinkBreakIcon,
   ShieldCheckIcon
 } from "@phosphor-icons/react";
 
@@ -223,7 +226,7 @@ function ToolPartView({
 
 // ── Main chat ─────────────────────────────────────────────────────────
 
-function Chat() {
+function Chat({ workspaceId }: { workspaceId: string }) {
   const [connected, setConnected] = useState(false);
   const [input, setInput] = useState("");
   const [showDebug, setShowDebug] = useState(false);
@@ -232,6 +235,7 @@ function Chat() {
 
   const agent = useAgent<ChatAgent>({
     agent: "ChatAgent",
+    name: workspaceId,
     onOpen: useCallback(() => setConnected(true), []),
     onClose: useCallback(() => setConnected(false), []),
     onError: useCallback(
@@ -453,7 +457,22 @@ function Chat() {
   );
 }
 
-export default function App() {
+// The browser can't read the status of a failed WebSocket handshake, so it
+// checks the link itself and never connects with an invalid ID.
+function InvalidLink() {
+  return (
+    <div className="flex items-center justify-center h-screen bg-kumo-elevated">
+      <Empty
+        icon={<LinkBreakIcon size={32} />}
+        title={INVALID_WORKSPACE_MESSAGE}
+        contents={<LinkButton href="/">Open a workspace</LinkButton>}
+      />
+    </div>
+  );
+}
+
+export default function App({ workspace }: { workspace: WorkspaceRoute }) {
+  if (workspace.kind === "invalid") return <InvalidLink />;
   return (
     <Toasty>
       <Suspense
@@ -463,7 +482,7 @@ export default function App() {
           </div>
         }
       >
-        <Chat />
+        <Chat workspaceId={workspace.id} />
       </Suspense>
     </Toasty>
   );
