@@ -11,6 +11,7 @@ Instructions for AI coding agents working in this repo. `DESIGN.md` is the sourc
 - Active rules always include every locked starter rule; locked rules can never be switched off or deleted.
 - `addRule`, `removeRule` and `restoreRule` always require human approval; rules change only inside those tools' `execute`.
 - Workspace IDs are validated before being used as an agent instance name, and only the lowercase form is accepted (the browser lowercases; the server rejects anything else).
+- Workers observability stays off: invocation logs record request URLs, and the SDK logs instance names on errors.
 - No credentials in code or commits (gitleaks in CI). Never log diffs, findings, request paths or workspace IDs. Redact matched secrets in stored findings. This repo follows its own starter pack.
 - The model config (ID, context window, maximum output, prices) lives in one config module; never hard-code a model ID or context size elsewhere.
 - `MAX_DIFF_BYTES = 50_000`, checked with `TextEncoder().encode(diff).length`; the Zod schema uses the same check.

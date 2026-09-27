@@ -121,3 +121,11 @@ One entry per design decision: what was decided, the options, and why. Newest la
 - **Decision:** (b).
 - **Why:** Either way, only lowercase names reach a Durable Object. (b) uses only the SDK's hooks, keeps the check in one place, and fails closed. Real clients never send uppercase, because the browser lowercases the link and fixes the URL bar before it connects.
 - **Consequences:** A hand-made request with an uppercase ID gets a 400, not a redirect. `WorkspaceId` (`z.uuidv4().lowercase()`) is shared by the browser and the Worker. Revisit if the SDK lets hooks change the instance name.
+
+## D16 - Workers observability is off
+
+- **Context:** Workspace IDs and request paths must never be logged, because the link is the credential. Workers Logs invocation logs record each request's URL, which contains the workspace ID. The SDK's error handlers log the instance name (partyserver's base `fetch` and WebSocket handlers), and a request to an unknown namespace logs the full URL. Those handlers are private, so our code can't change what they log.
+- **Options:** (a) observability on, Cloudflare's default for new Workers; (b) on, with invocation logs off; (c) off.
+- **Decision:** (c): `"observability": { "enabled": false }` in `wrangler.jsonc`.
+- **Why:** (a) stores every workspace link for 3 days on the Free plan. (b) still stores SDK error messages that contain workspace IDs. Only (c) keeps them out of storage.
+- **Consequences:** There are no stored logs for debugging the deployed app; SDK errors show only in a live `wrangler tail`. Revisit if the SDK stops logging instance names, or if logs can be filtered before they are stored.
