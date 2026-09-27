@@ -153,3 +153,9 @@ Since the fix for the model double response mixup is to wrap the model in simula
 ````text
 Yes, add D20
 ````
+
+### 2026-09-27 12:08 UTC
+
+````text
+Step 3 is done. Start step 4 in two halves. 4a: build the whole review path end to end, with placeholders for my two modules: one chunk for the whole diff, and a validator that only checks the Zod shape. Mark both placeholders clearly. Stay on Llama for the review model. The review model stays on llama-3.3: it is called without streaming (a Workflow step needs the whole answer to validate it), and the provider's non-streaming path reads each field once, so this bug can't reach it. Show findings' message and suggestion as plain text, never markdown. Stop when 4a works end to end. Then for 4b, write the signatures and tests for diff splitting, the token budget and finding validation, and stop for me.
+````

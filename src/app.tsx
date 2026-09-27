@@ -4,6 +4,7 @@ import { useAgentChat } from "@cloudflare/ai-chat/react";
 import { getToolName, isToolUIPart, type UIMessage } from "ai";
 import type { ChatAgent } from "./server";
 import type { ResolvedRules } from "./rules";
+import { REVIEW_PART, type ReviewPartData } from "./review-summary";
 import { INVALID_WORKSPACE_MESSAGE, type WorkspaceRoute } from "./workspace";
 import {
   Badge,
@@ -31,6 +32,8 @@ import {
   CheckCircleIcon,
   XCircleIcon,
   BugIcon,
+  CircleNotchIcon,
+  FileMagnifyingGlassIcon,
   LinkBreakIcon,
   ListChecksIcon,
   LockIcon,
@@ -152,6 +155,71 @@ function describeRuleChange(
     default:
       return null;
   }
+}
+
+// ── Reviews ───────────────────────────────────────────────────────────
+
+const VERDICT = {
+  pass: { label: "Passed", badge: "success" },
+  fail: { label: "Failed", badge: "error" },
+  incomplete: { label: "Incomplete", badge: "warning" }
+} as const;
+
+/**
+ * A finished review. A finding's message and suggestion are model text
+ * shaped by the diff, so they're plain React text: never markdown, never HTML.
+ */
+function ReviewCard({ review }: { review: ReviewPartData }) {
+  const verdict = VERDICT[review.verdict];
+  const count = review.findings.length;
+  return (
+    <div className="flex justify-start">
+      <div className="w-full max-w-[85%] space-y-3 rounded-xl bg-kumo-base px-4 py-3 ring ring-kumo-line">
+        <div className="flex items-center gap-2">
+          <FileMagnifyingGlassIcon size={16} className="text-kumo-inactive" />
+          <Text size="sm" bold>
+            Review
+          </Text>
+          <Badge variant={verdict.badge}>{verdict.label}</Badge>
+          <Text size="xs" variant="secondary">
+            {count === 1 ? "1 finding" : `${count} findings`}
+          </Text>
+        </div>
+        {review.notes.length > 0 && (
+          <ul className="space-y-1">
+            {review.notes.map((note, i) => (
+              <li key={i} className="text-sm text-kumo-default">
+                {note}
+              </li>
+            ))}
+          </ul>
+        )}
+        {count > 0 && (
+          <ul className="space-y-2">
+            {review.findings.map((finding, i) => (
+              <li key={i} className="rounded-lg border border-kumo-line p-2.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant={finding.severity}>{finding.severity}</Badge>
+                  <code className="text-xs text-kumo-subtle">
+                    {finding.ruleId}
+                  </code>
+                  <code className="break-all text-xs text-kumo-default">
+                    {finding.file}:{finding.line}
+                  </code>
+                </div>
+                <p className="mt-1.5 whitespace-pre-wrap break-words text-sm text-kumo-default">
+                  {finding.message}
+                </p>
+                <p className="mt-1 whitespace-pre-wrap break-words text-sm text-kumo-subtle">
+                  Suggestion: {finding.suggestion}
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
 }
 
 // ── Tool rendering ────────────────────────────────────────────────────
@@ -396,6 +464,33 @@ function Chat({ workspaceId }: { workspaceId: string }) {
     if (textareaRef.current) textareaRef.current.style.height = "auto";
   }, [input, isStreaming, sendMessage]);
 
+  // The review box calls the agent directly; the diff never enters the chat (D8)
+  const [diff, setDiff] = useState("");
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [pendingReviewId, setPendingReviewId] = useState<string | null>(null);
+  // A review is done once its message arrives in the chat
+  const reviewing =
+    pendingReviewId !== null &&
+    !messages.some((m) => m.id === `review-${pendingReviewId}`);
+
+  const submitReview = useCallback(async () => {
+    setReviewError(null);
+    setSubmitting(true);
+    try {
+      const { reviewId } = await agent.stub.submitReview(diff);
+      setPendingReviewId(reviewId);
+      setDiff("");
+    } catch (e) {
+      // The server's DESIGN.md §5 message, e.g. for a diff over 50 KB
+      setReviewError(
+        e instanceof Error ? e.message : "The review couldn't be started."
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }, [agent, diff]);
+
   return (
     <div className="flex flex-col h-screen bg-kumo-elevated">
       {/* Header */}
@@ -465,7 +560,7 @@ function Chat({ workspaceId }: { workspaceId: string }) {
           {messages.length === 0 && (
             <Empty
               icon={<ChatCircleDotsIcon size={32} />}
-              title="Ask about this workspace's rules"
+              title="Ask about this workspace's rules, or review a diff below"
             />
           )}
 
@@ -473,6 +568,11 @@ function Chat({ workspaceId }: { workspaceId: string }) {
             const isUser = message.role === "user";
             const isLastAssistant =
               message.role === "assistant" && index === messages.length - 1;
+            // A review message's text part is the chat model's summary; the
+            // card shows the full review from the data part instead
+            const review = message.parts.find(
+              (part) => part.type === REVIEW_PART
+            ) as { data: ReviewPartData } | undefined;
 
             return (
               <div key={message.id} className="space-y-2">
@@ -482,52 +582,55 @@ function Chat({ workspaceId }: { workspaceId: string }) {
                   </pre>
                 )}
 
+                {review && <ReviewCard review={review.data} />}
+
                 {/* Render parts in chronological (array) order */}
-                {message.parts.map((part, i) => {
-                  const key = `${message.id}-${i}`;
+                {!review &&
+                  message.parts.map((part, i) => {
+                    const key = `${message.id}-${i}`;
 
-                  if (isToolUIPart(part)) {
-                    return (
-                      <ToolPartView
-                        key={key}
-                        part={part}
-                        rules={rules}
-                        addToolApprovalResponse={addToolApprovalResponse}
-                      />
-                    );
-                  }
-
-                  if (part.type === "text") {
-                    if (!part.text) return null;
-
-                    if (isUser) {
+                    if (isToolUIPart(part)) {
                       return (
-                        <div key={key} className="flex justify-end">
-                          <div className="max-w-[85%] px-4 py-2.5 rounded-2xl rounded-br-md bg-kumo-contrast text-kumo-inverse leading-relaxed">
-                            {part.text}
+                        <ToolPartView
+                          key={key}
+                          part={part}
+                          rules={rules}
+                          addToolApprovalResponse={addToolApprovalResponse}
+                        />
+                      );
+                    }
+
+                    if (part.type === "text") {
+                      if (!part.text) return null;
+
+                      if (isUser) {
+                        return (
+                          <div key={key} className="flex justify-end">
+                            <div className="max-w-[85%] px-4 py-2.5 rounded-2xl rounded-br-md bg-kumo-contrast text-kumo-inverse leading-relaxed">
+                              {part.text}
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div key={key} className="flex justify-start">
+                          <div className="max-w-[85%] rounded-2xl rounded-bl-md bg-kumo-base text-kumo-default leading-relaxed">
+                            <Streamdown
+                              className="sd-theme rounded-2xl rounded-bl-md p-3"
+                              plugins={{ code }}
+                              controls={false}
+                              isAnimating={isLastAssistant && isStreaming}
+                            >
+                              {part.text}
+                            </Streamdown>
                           </div>
                         </div>
                       );
                     }
 
-                    return (
-                      <div key={key} className="flex justify-start">
-                        <div className="max-w-[85%] rounded-2xl rounded-bl-md bg-kumo-base text-kumo-default leading-relaxed">
-                          <Streamdown
-                            className="sd-theme rounded-2xl rounded-bl-md p-3"
-                            plugins={{ code }}
-                            controls={false}
-                            isAnimating={isLastAssistant && isStreaming}
-                          >
-                            {part.text}
-                          </Streamdown>
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  return null;
-                })}
+                    return null;
+                  })}
               </div>
             );
           })}
@@ -538,6 +641,45 @@ function Chat({ workspaceId }: { workspaceId: string }) {
 
       {/* Input */}
       <div className="border-t border-kumo-line bg-kumo-base">
+        <div className="max-w-3xl mx-auto px-5 pt-4">
+          <details className="rounded-xl border border-kumo-line">
+            <summary className="flex cursor-pointer select-none items-center gap-2 px-3 py-2 text-sm font-medium text-kumo-default">
+              <FileMagnifyingGlassIcon size={16} />
+              Review a diff
+              {reviewing && (
+                <span className="ml-auto flex items-center gap-1.5 text-xs font-normal text-kumo-subtle">
+                  <CircleNotchIcon size={12} className="animate-spin" />
+                  Reviewing...
+                </span>
+              )}
+            </summary>
+            <div className="space-y-2 px-3 pb-3">
+              <textarea
+                value={diff}
+                onChange={(e) => setDiff(e.target.value)}
+                rows={8}
+                spellCheck={false}
+                aria-label="Diff to review"
+                placeholder="Paste the output of git diff"
+                className="w-full rounded-lg border border-kumo-line bg-kumo-base p-2 font-mono text-xs text-kumo-default placeholder:text-kumo-inactive focus:outline-none focus:ring-1 focus:ring-kumo-ring"
+              />
+              {reviewError && (
+                <p role="alert" className="text-sm text-kumo-danger">
+                  {reviewError}
+                </p>
+              )}
+              <Button
+                variant="primary"
+                size="sm"
+                icon={<FileMagnifyingGlassIcon size={14} />}
+                onClick={submitReview}
+                disabled={!connected || submitting || reviewing || !diff.trim()}
+              >
+                Review
+              </Button>
+            </div>
+          </details>
+        </div>
         <form
           onSubmit={(e) => {
             e.preventDefault();
