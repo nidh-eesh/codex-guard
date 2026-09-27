@@ -93,3 +93,15 @@ Before step 2, a few fixes.
 ````text
 Yes, add persist-credentials: false. Yes record it in consequences. Check whether the dompurify advisories affect the version bundled through streamdown, and tell me what upgrading would change. Don't upgrade yet.
 ````
+
+### 2026-09-27 01:03 UTC
+
+````text
+Start step 2
+````
+
+### 2026-09-27 01:29 UTC
+
+````text
+Write the decision entries for workspace IDs acceptence only in lowercase and turning off observaility
+````
