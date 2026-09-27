@@ -111,3 +111,15 @@ Write the decision entries for workspace IDs acceptence only in lowercase and tu
 ````text
 Start step 3
 ````
+
+### 2026-09-27 07:12 UTC
+
+````text
+Drop a custom rule whose ID matches a starter ID, the starter rule wins. Replace the it.todo with a real test for it, using a locked starter ID
+````
+
+### 2026-09-27 07:15 UTC
+
+````text
+Yes, write D17 and the DESIGN.md line
+````

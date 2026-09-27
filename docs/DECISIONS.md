@@ -129,3 +129,11 @@ One entry per design decision: what was decided, the options, and why. Newest la
 - **Decision:** (c): `"observability": { "enabled": false }` in `wrangler.jsonc`.
 - **Why:** (a) stores every workspace link for 3 days on the Free plan. (b) still stores SDK error messages that contain workspace IDs. Only (c) keeps them out of storage.
 - **Consequences:** There are no stored logs for debugging the deployed app; SDK errors show only in a live `wrangler tail`. Revisit if the SDK stops logging instance names, or if logs can be filtered before they are stored.
+
+## D17 - A custom rule can't replace a starter rule
+
+- **Context:** Custom rule IDs start with `c_`, so `addRule` can't create one with a starter ID. A bad row (a bug, a migration, a direct edit) still could. For a locked rule, it would let a weaker copy (different text, `warning` severity) stand in for it.
+- **Options:** (a) drop the custom rule; (b) throw; (c) keep both.
+- **Decision:** (a): the starter rule wins.
+- **Why:** (c) puts two rules with one ID into every review, so a finding can't be matched to one rule's severity. (b) turns one bad row into a workspace that can't load its rules or run reviews. (a) keeps locked rules exactly as written in code, and the workspace keeps working.
+- **Consequences:** The dropped row stays in the table and isn't shown anywhere.

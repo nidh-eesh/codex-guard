@@ -1,8 +1,10 @@
 import type {
+  ActiveRule,
   CustomRule,
   DisabledDefault,
   ResolvedRules,
-  StarterRule
+  StarterRule,
+  SwitchedOffRule
 } from "./rules";
 
 /**
@@ -20,20 +22,56 @@ import type {
  *   order given (callers pass them oldest first).
  * - `switchedOff`: one entry per starter rule that is switched off, in
  *   `starterPack` order.
+ * - A custom rule whose ID matches a starter ID is dropped: the starter rule
+ *   wins. addRule can't create one (custom IDs start with `c_`); this guards
+ *   against bad rows.
  * - The inputs are not modified.
  *
- * Preconditions, guaranteed by the tables: at most one `disabled` row per
- * `ruleId` (primary key), and custom rule IDs start with `c_`.
+ * Precondition, guaranteed by the table's primary key: at most one
+ * `disabled` row per `ruleId`.
  */
 export function resolveRules(
   starterPack: readonly StarterRule[],
   disabled: readonly DisabledDefault[],
   custom: readonly CustomRule[]
 ): ResolvedRules {
-  // TODO(author): implement. The `void`s only silence the unused-parameter
-  // lint until then.
-  void starterPack;
-  void disabled;
-  void custom;
-  throw new Error("resolveRules is not implemented yet");
+  const disabledMap = new Map(disabled.map((d) => [d.ruleId, d]));
+  const starterIds = new Set(starterPack.map((s) => s.id));
+  const active: ActiveRule[] = [];
+  const switchedOff: SwitchedOffRule[] = [];
+  for (const starter of starterPack) {
+    const row = disabledMap.get(starter.id);
+    if (row && !starter.locked) {
+      switchedOff.push({
+        id: starter.id,
+        text: starter.text,
+        severity: starter.severity,
+        reason: row.reason,
+        textWhenSwitchedOff: row.ruleText,
+        disabledAt: row.disabledAt
+      });
+    } else {
+      active.push({
+        id: starter.id,
+        text: starter.text,
+        severity: starter.severity,
+        locked: starter.locked,
+        source: "starter"
+      });
+    }
+  }
+
+  for (const rule of custom) {
+    if (!starterIds.has(rule.id)) {
+      active.push({
+        id: rule.id,
+        text: rule.text,
+        severity: rule.severity,
+        locked: false,
+        source: "custom"
+      });
+    }
+  }
+
+  return { active, switchedOff };
 }

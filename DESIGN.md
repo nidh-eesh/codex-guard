@@ -32,7 +32,7 @@ A guardrail agent for engineering teams, built on Cloudflare. Each workspace sta
 | SQLite: `custom_rules`      | `{ id, text, severity, createdAt }`        | Rules the workspace added. IDs start with `c_`, so they can't collide with starter IDs.                             |
 | SQLite: `disabled_defaults` | `{ ruleId, reason, ruleText, disabledAt }` | Switched-off recommended rules, with the rule text as it was when switched off. This table is the exception record. |
 
-**Active rules** = starter pack − disabled defaults + custom rules. Locked starter rules are always active, even if a `disabled_defaults` row names them, and rows whose ID is no longer in the starter pack are ignored. Computed from SQLite (the source of truth) and pushed to the browser as `state`. Updating the starter pack in code updates every workspace.
+**Active rules** = starter pack − disabled defaults + custom rules. Locked starter rules are always active, even if a `disabled_defaults` row names them, and rows whose ID is no longer in the starter pack are ignored. A custom rule whose ID matches a starter ID is dropped; the starter rule wins (D17). Computed from SQLite (the source of truth) and pushed to the browser as `state`. Updating the starter pack in code updates every workspace.
 
 **Duplicates:** rule text is compared after trimming, collapsing whitespace and lowercasing, against active rules only, so the text of a switched-off default can be re-added as a custom rule (the override path in §8).
 

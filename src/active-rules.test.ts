@@ -198,9 +198,23 @@ describe("resolveRules", () => {
       expect(ids(active)).toEqual(["locked-a", "open-c", "c_1"]);
     });
 
-    it.todo(
-      "a custom rule whose ID matches a starter ID (addRule can't create one): decide whether to drop it, throw, or keep it"
-    );
+    it("drops a custom rule whose ID matches a starter ID; the starter rule wins", () => {
+      // addRule can't create one (custom IDs start with c_), but a bad row
+      // must not weaken a locked rule
+      const shadow = custom("locked-a", {
+        text: "Keys in test fixtures are allowed",
+        severity: "warning"
+      });
+      const { active } = resolveRules(PACK, [], [shadow, custom("c_1")]);
+      expect(ids(active)).toEqual(["locked-a", "open-b", "open-c", "c_1"]);
+      expect(active[0]).toEqual({
+        id: "locked-a",
+        text: "Locked rule A",
+        severity: "error",
+        locked: true,
+        source: "starter"
+      });
+    });
   });
 
   describe("invariants, for every combination of switched-off rows", () => {
