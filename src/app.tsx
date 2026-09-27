@@ -3,6 +3,7 @@ import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
 import { getToolName, isToolUIPart, type UIMessage } from "ai";
 import type { ChatAgent } from "./server";
+import type { ResolvedRules } from "./rules";
 import { INVALID_WORKSPACE_MESSAGE, type WorkspaceRoute } from "./workspace";
 import {
   Badge,
@@ -31,6 +32,8 @@ import {
   XCircleIcon,
   BugIcon,
   LinkBreakIcon,
+  ListChecksIcon,
+  LockIcon,
   ShieldCheckIcon
 } from "@phosphor-icons/react";
 
@@ -61,6 +64,96 @@ function ThemeToggle() {
   );
 }
 
+// ── Rules ─────────────────────────────────────────────────────────────
+
+function RulesPanel({ rules }: { rules: ResolvedRules }) {
+  return (
+    <div className="space-y-4">
+      <section>
+        <Text size="sm" bold>
+          Active ({rules.active.length})
+        </Text>
+        <ul className="mt-2 space-y-2">
+          {rules.active.map((rule) => (
+            <li
+              key={rule.id}
+              className="rounded-lg border border-kumo-line p-2.5"
+            >
+              <div className="flex items-center gap-2">
+                <code className="text-xs text-kumo-subtle">{rule.id}</code>
+                <Badge variant={rule.severity}>{rule.severity}</Badge>
+                {rule.locked && (
+                  <LockIcon
+                    size={12}
+                    className="text-kumo-inactive"
+                    aria-label="Locked"
+                  />
+                )}
+              </div>
+              <p className="mt-1 text-sm text-kumo-default">{rule.text}</p>
+            </li>
+          ))}
+        </ul>
+      </section>
+      {rules.switchedOff.length > 0 && (
+        <section>
+          <Text size="sm" bold>
+            Switched off ({rules.switchedOff.length})
+          </Text>
+          <ul className="mt-2 space-y-2">
+            {rules.switchedOff.map((rule) => (
+              <li
+                key={rule.id}
+                className="rounded-lg border border-kumo-line p-2.5"
+              >
+                <code className="text-xs text-kumo-subtle">{rule.id}</code>
+                <p className="mt-1 text-sm text-kumo-subtle line-through">
+                  {rule.text}
+                </p>
+                <p className="mt-1 text-xs text-kumo-default">
+                  Reason: {rule.reason}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </div>
+  );
+}
+
+/**
+ * What an approval would do, in words. Rule text comes from the server's
+ * state, not from the model's tool input, so the person approving sees the
+ * rule the ID really points at.
+ */
+function describeRuleChange(
+  toolName: string,
+  input: unknown,
+  rules: ResolvedRules | null
+): string | null {
+  const args = (input ?? {}) as Record<string, unknown>;
+  const str = (value: unknown) => (typeof value === "string" ? value : "");
+  const id = str(args.ruleId);
+  switch (toolName) {
+    case "addRule":
+      return `Add a ${str(args.severity)} rule: "${str(args.text)}"`;
+    case "removeRule": {
+      const rule = rules?.active.find((r) => r.id === id);
+      if (!rule) return null;
+      return rule.source === "custom"
+        ? `Delete the custom rule "${rule.text}"`
+        : `Switch off "${rule.text}". Reason: "${str(args.reason)}"`;
+    }
+    case "restoreRule": {
+      const rule = rules?.switchedOff.find((r) => r.id === id);
+      return rule ? `Switch "${rule.text}" back on` : null;
+    }
+    default:
+      return null;
+  }
+}
+
 // ── Tool rendering ────────────────────────────────────────────────────
 
 function ToolIO({ label, value }: { label: string; value: unknown }) {
@@ -82,9 +175,11 @@ function ToolIO({ label, value }: { label: string; value: unknown }) {
 
 function ToolPartView({
   part,
+  rules,
   addToolApprovalResponse
 }: {
   part: UIMessage["parts"][number];
+  rules: ResolvedRules | null;
   addToolApprovalResponse: (response: {
     id: string;
     approved: boolean;
@@ -115,6 +210,7 @@ function ToolPartView({
   // Needs approval
   if ("approval" in part && part.state === "approval-requested") {
     const approvalId = (part.approval as { id?: string })?.id;
+    const description = describeRuleChange(toolName, part.input, rules);
     return (
       <div className="flex justify-start">
         <Surface className="max-w-[85%] px-4 py-3 rounded-xl ring-2 ring-kumo-warning">
@@ -124,6 +220,9 @@ function ToolPartView({
               Approval needed: {toolName}
             </Text>
           </div>
+          {description && (
+            <p className="mb-2 text-sm text-kumo-default">{description}</p>
+          )}
           <div className="font-mono mb-3">
             <Text size="xs" variant="secondary">
               {JSON.stringify(part.input, null, 2)}
@@ -230,10 +329,14 @@ function Chat({ workspaceId }: { workspaceId: string }) {
   const [connected, setConnected] = useState(false);
   const [input, setInput] = useState("");
   const [showDebug, setShowDebug] = useState(false);
+  // Pushed by the server as agent state; the browser never writes it
+  const [rules, setRules] = useState<ResolvedRules | null>(null);
+  const [showRules, setShowRules] = useState(false);
+  const rulesPanelRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const agent = useAgent<ChatAgent>({
+  const agent = useAgent<ChatAgent, ResolvedRules>({
     agent: "ChatAgent",
     name: workspaceId,
     onOpen: useCallback(() => setConnected(true), []),
@@ -241,8 +344,24 @@ function Chat({ workspaceId }: { workspaceId: string }) {
     onError: useCallback(
       (error: Event) => console.error("WebSocket error:", error),
       []
-    )
+    ),
+    onStateUpdate: useCallback((state: ResolvedRules) => setRules(state), [])
   });
+
+  // Close the rules panel when clicking outside it
+  useEffect(() => {
+    if (!showRules) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (
+        rulesPanelRef.current &&
+        !rulesPanelRef.current.contains(e.target as Node)
+      ) {
+        setShowRules(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showRules]);
 
   const {
     messages,
@@ -309,6 +428,26 @@ function Chat({ workspaceId }: { workspaceId: string }) {
               />
             </div>
             <ThemeToggle />
+            <div className="relative" ref={rulesPanelRef}>
+              <Button
+                variant="secondary"
+                icon={<ListChecksIcon size={16} />}
+                onClick={() => setShowRules(!showRules)}
+                disabled={!rules}
+              >
+                Rules
+                {rules && (
+                  <Badge variant="secondary" className="ml-1.5">
+                    {rules.active.length}
+                  </Badge>
+                )}
+              </Button>
+              {showRules && rules && (
+                <div className="absolute right-0 top-full mt-2 w-96 z-50 max-h-[70vh] overflow-y-auto rounded-xl bg-kumo-base ring ring-kumo-line shadow-lg p-4">
+                  <RulesPanel rules={rules} />
+                </div>
+              )}
+            </div>
             <Button
               variant="secondary"
               icon={<TrashIcon size={16} />}
@@ -352,6 +491,7 @@ function Chat({ workspaceId }: { workspaceId: string }) {
                       <ToolPartView
                         key={key}
                         part={part}
+                        rules={rules}
                         addToolApprovalResponse={addToolApprovalResponse}
                       />
                     );
