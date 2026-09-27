@@ -87,3 +87,9 @@ Before step 2, a few fixes.
 4. Add vitest as a dev dependency. Nothing else yet.
 </pasted_content id="2b91">
 ````
+
+### 2026-09-26 18:37 UTC
+
+````text
+Yes, add persist-credentials: false. Yes record it in consequences. Check whether the dompurify advisories affect the version bundled through streamdown, and tell me what upgrading would change. Don't upgrade yet.
+````

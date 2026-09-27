@@ -64,7 +64,7 @@ One entry per design decision: what was decided, the options, and why. Newest la
 - **Options:** (a) a `reviewDiff` chat tool that takes the diff; (b) a tool with no arguments that reads the raw last user message; (c) a separate path: review box → callable method → workflow.
 - **Decision:** (c).
 - **Why:** With (a), the diff counts twice against the 24k context (once read, once copied), capping it at about 11k tokens; the model can change it while copying; and the untrusted diff reaches a model that has tools. (b) fixes the copying, but the diff still sits in that model's context and in chat history.
-- **Consequences:** The chat model has only rule tools, and `reviewDiff` is removed from the chat tools. Chat history never contains a raw diff. Layer 1 of the trust boundary holds for diffs because of how the app is built, not because of the prompt.
+- **Consequences:** The chat model has only rule tools, and `reviewDiff` is removed from the chat tools. Those tools are defined on the server only: `options.clientTools`, the tool schemas a browser can send with a chat message, is never passed to the model, so a browser can't give it new tools. Chat history never contains a raw diff. Layer 1 of the trust boundary holds for diffs because of how the app is built, not because of the prompt.
 
 ## D9 - The chat model sees only validated review fields
 
