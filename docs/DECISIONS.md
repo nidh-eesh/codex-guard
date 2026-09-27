@@ -137,3 +137,19 @@ One entry per design decision: what was decided, the options, and why. Newest la
 - **Decision:** (a): the starter rule wins.
 - **Why:** (c) puts two rules with one ID into every review, so a finding can't be matched to one rule's severity. (b) turns one bad row into a workspace that can't load its rules or run reviews. (a) keeps locked rules exactly as written in code, and the workspace keeps working.
 - **Consequences:** The dropped row stays in the table and isn't shown anywhere.
+
+## D18 - Restoring a rule is checked like adding one
+
+- **Context:** `restoreRule` switches a default back on, which adds an active rule. The design limited adding (at most 50 active rules, no duplicate text) but said nothing about restoring.
+- **Options:** (a) restoring always succeeds; (b) restoring is refused at 50 active rules, and while an active custom rule has the same text.
+- **Decision:** (b).
+- **Why:** D5's cap keeps every review's rules within about 3k tokens, and (a) breaks it. Two active rules with one text both go into every review, perhaps at different severities, and a finding can cite either.
+- **Consequences:** To restore a default that a custom rule overrides, remove the custom rule first. The §5 row reads "Adding or restoring a 51st rule".
+
+## D19 - Switch-off reasons are capped at 200 characters
+
+- **Context:** The reason is free text stored in SQLite, pushed to every browser in state, and read by the chat model through `listRules`. The design had no limit.
+- **Options:** (a) no limit; (b) at most 200 characters, like rule text.
+- **Decision:** (b): "The reason must be at most 200 characters."
+- **Why:** An unbounded reason bloats every browser's state and every chat turn that lists rules, and it's untrusted text the chat model reads.
+- **Consequences:** Longer reasons must be summarised. Reasons are stored trimmed, with whitespace collapsed.

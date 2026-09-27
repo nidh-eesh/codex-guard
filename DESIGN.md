@@ -34,12 +34,13 @@ A guardrail agent for engineering teams, built on Cloudflare. Each workspace sta
 
 **Active rules** = starter pack − disabled defaults + custom rules. Locked starter rules are always active, even if a `disabled_defaults` row names them, and rows whose ID is no longer in the starter pack are ignored. A custom rule whose ID matches a starter ID is dropped; the starter rule wins (D17). Computed from SQLite (the source of truth) and pushed to the browser as `state`. Updating the starter pack in code updates every workspace.
 
-**Duplicates:** rule text is compared after trimming, collapsing whitespace and lowercasing, against active rules only, so the text of a switched-off default can be re-added as a custom rule (the override path in §8).
+**Duplicates:** rule text is compared after trimming, collapsing whitespace and lowercasing, against active rules only, so the text of a switched-off default can be re-added as a custom rule (the override path in §8). Restoring a default is checked the same way: it is refused while an active custom rule has its text (D18). Rule text and reasons are stored trimmed, with every run of whitespace collapsed to one space, so they stay on one line in prompts and in the UI.
 
 **Limits**
 
 - Rule text: 10–200 characters (about 50 tokens; about 60 with ID and severity).
-- At most 50 active rules in total, including the starter pack. Every active rule goes into every review call: 50 × ~60 tokens ≈ 3k of the 24k-token context.
+- At most 50 active rules in total, including the starter pack. Every active rule goes into every review call: 50 × ~60 tokens ≈ 3k of the 24k-token context. Restoring a switched-off default counts as adding a rule (D18).
+- Reason for switching off a recommended rule: at most 200 characters (D19).
 
 **Starter pack**
 
@@ -71,10 +72,11 @@ Messages are exact strings, including the backticks.
 | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | Rule text empty, or outside 10–200 characters                                     | "Rule text must be between 10 and 200 characters."                                    |
 | Duplicate rule                                                                    | "A rule with this text already exists."                                               |
-| Adding a 51st rule                                                                | "This workspace has 50 rules, the maximum. Remove one first."                         |
+| Adding or restoring a 51st rule                                                   | "This workspace has 50 rules, the maximum. Remove one first."                         |
 | Unknown rule ID                                                                   | "No rule with ID `{ruleId}` exists in this workspace."                                |
 | Removing or switching off a locked rule                                           | "Rule `{ruleId}` is locked and can't be switched off."                                |
 | Switching off a recommended rule without a reason                                 | "A reason is required to switch off a recommended rule."                              |
+| A reason over 200 characters                                                      | "The reason must be at most 200 characters."                                          |
 | Switching off a rule that is already switched off                                 | "Rule `{ruleId}` is already switched off."                                            |
 | Restoring a rule that isn't switched off                                          | "Rule `{ruleId}` is not switched off."                                                |
 | Empty diff                                                                        | "The diff is empty. Paste a unified diff to review."                                  |

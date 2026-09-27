@@ -123,3 +123,21 @@ Drop a custom rule whose ID matches a starter ID, the starter rule wins. Replace
 ````text
 Yes, write D17 and the DESIGN.md line
 ````
+
+### 2026-09-27 08:41 UTC
+
+````text
+resolveRules is implemented and committed. Continue to step 3: SQLite tables, the four tools with approval, state pushed to the browser, validateStateChange. Recompute and push the rules in onStart too, not just after changes, so a deploy that edits STARTER_PACK doesn't leave stale state.
+````
+
+### 2026-09-27 09:56 UTC
+
+````text
+Research and analyse if this modal issue can be fixed if we upgrade to the next release, what all chained changes will it cause. I have tried with glm 4.7 flash and the issue is sorted. Still try if this modal response issue can be fixed
+````
+
+### 2026-09-27 10:09 UTC
+
+````text
+Add D18 and D19. I will fix the model issue next turn
+````
