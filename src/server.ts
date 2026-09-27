@@ -4,8 +4,10 @@ import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
 import {
   convertToModelMessages,
   pruneMessages,
+  simulateStreamingMiddleware,
   stepCountIs,
-  streamText
+  streamText,
+  wrapLanguageModel
 } from "ai";
 import { MODEL } from "./model-config";
 import { withReferrerPolicy } from "./http";
@@ -55,8 +57,15 @@ export class ChatAgent extends AIChatAgent<Env, ResolvedRules> {
     const workersai = createWorkersAI({ binding: this.env.AI });
 
     const result = streamText({
-      model: workersai(MODEL.id, {
-        sessionAffinity: this.sessionAffinity
+      // workers-ai-provider 3.3.1 doubles streamed tool-call arguments for
+      // this model: each chunk carries the same delta in `tool_calls` and in
+      // `choices[0].delta.tool_calls`, and it reads both. A non-streaming
+      // call reads one or the other, so tool calls arrive intact.
+      model: wrapLanguageModel({
+        model: workersai(MODEL.id, {
+          sessionAffinity: this.sessionAffinity
+        }),
+        middleware: simulateStreamingMiddleware()
       }),
       maxOutputTokens: MODEL.maxOutputTokens,
       system: SYSTEM_PROMPT,

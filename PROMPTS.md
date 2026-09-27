@@ -141,3 +141,15 @@ Research and analyse if this modal issue can be fixed if we upgrade to the next 
 ````text
 Add D18 and D19. I will fix the model issue next turn
 ````
+
+### 2026-09-27 10:21 UTC
+
+````text
+Since the fix for the model double response mixup is to wrap the model in simulateStreamingMiddleware, which ends the response stream capability, explore adding another model namely GLM 4.7 flash and option to change models from browser by the user. This adds reasoning capability as well. Also explore the radius of effects on my existing setup if any. Would this align me more towards an ai@7 upgrade and would it be better or worse. Explore don't implement
+````
+
+### 2026-09-27 10:35 UTC
+
+````text
+Yes, add D20
+````

@@ -64,6 +64,8 @@ A guardrail agent for engineering teams, built on Cloudflare. Each workspace sta
 
 Rules change only inside these tools' `execute`. Reviewing a diff is not a chat tool: diffs are submitted through the review box (§6, D8).
 
+The chat model is called without token streaming: the provider doubles streamed tool-call arguments for this model, so replies appear all at once (D20).
+
 ## 5. Error messages
 
 Messages are exact strings, including the backticks.

@@ -153,3 +153,11 @@ One entry per design decision: what was decided, the options, and why. Newest la
 - **Decision:** (b): "The reason must be at most 200 characters."
 - **Why:** An unbounded reason bloats every browser's state and every chat turn that lists rules, and it's untrusted text the chat model reads.
 - **Consequences:** Longer reasons must be summarised. Reasons are stored trimmed, with whitespace collapsed.
+
+## D20 - The chat model is called without token streaming
+
+- **Context:** When streaming, Workers AI sends each llama-3.3 delta twice in one chunk: in the native field (`response`, `tool_calls`) and in `choices[0].delta`. workers-ai-provider 3.3.1 reads both, so every streamed reply was doubled. Text came out repeated, and tool-call arguments stopped being valid JSON, so every rule change failed before the approval step. 4.0.0 and the provider's main branch have the same code, and 4.0.0 needs AI SDK 7.
+- **Options:** (a) patch the provider with patch-package; (b) switch the chat model to GLM-4.7-Flash, whose tool calls arrive intact; (c) upgrade to workers-ai-provider 4.0.0; (d) wrap the model in the AI SDK's `simulateStreamingMiddleware`, so each call is non-streaming and the provider reads tool calls from one field or the other.
+- **Decision:** (d).
+- **Why:** (c) doesn't fix the bug and forces the AI SDK 7 upgrade. (b) reopens the model decision (§1, D6, D12). (a) adds a dependency and a patch against a built file. (d) is a two-line change using the SDK's own middleware, tested end to end: approval, the change, the state pushed, and the exact §5 message on a refusal.
+- **Consequences:** Chat replies appear all at once instead of token by token, after a wait with nothing on screen. The review model stays on llama-3.3: it is called without streaming (a Workflow step needs the whole answer to validate it), and the provider's non-streaming path reads each field once, so this bug can't reach it. The review call must never stream.
