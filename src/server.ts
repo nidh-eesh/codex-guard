@@ -1,5 +1,11 @@
 import { createWorkersAI } from "workers-ai-provider";
-import { callable, routeAgentRequest, type Connection } from "agents";
+import {
+  callable,
+  getCurrentAgent,
+  routeAgentRequest,
+  type Connection,
+  type ConnectionContext
+} from "agents";
 import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
 import {
   convertToModelMessages,
@@ -27,9 +33,28 @@ import {
 } from "./review-summary";
 import type { ReviewResult } from "./review-types";
 import type { ReviewParams } from "./review-workflow";
+import type { ReviewRun } from "./review-pipeline";
+import { worstCaseNeurons } from "./review-cost";
+import { splitDiff } from "./diff-split";
+import { chunkBudget } from "./token-budget";
+import {
+  budgetDay,
+  DAILY_LIMIT_MESSAGE,
+  DailyLimitError
+} from "./budget-ledger";
+import {
+  chatErrorResponse,
+  clientIp,
+  connectionIp,
+  enforceRateLimit,
+  RATE_LIMITED_MESSAGE,
+  rateLimitKey,
+  type ConnectionInfo
+} from "./rate-limit";
 
-// Workflow classes must be exported from the Worker's main module
+// Workflow and Durable Object classes must be exported from the main module
 export { ReviewWorkflow } from "./review-workflow";
+export { NeuronBudget } from "./neuron-budget";
 
 const REVIEW_WORKFLOW = "REVIEW_WORKFLOW";
 
@@ -57,6 +82,18 @@ export class ChatAgent extends AIChatAgent<Env, ResolvedRules> {
     this.pushRules();
   }
 
+  // The per-IP limits key on the IP read here, once, from the upgrade
+  // request. The connection keeps it across hibernation; it's never logged.
+  onConnect(connection: Connection, ctx: ConnectionContext) {
+    const info: ConnectionInfo = { ip: clientIp(ctx.request) };
+    connection.setState(info);
+  }
+
+  /** The IP of the connection that sent the current message. */
+  private callerIp(): string {
+    return connectionIp(getCurrentAgent().connection);
+  }
+
   validateStateChange(
     _nextState: ResolvedRules,
     source: Connection | "server"
@@ -77,13 +114,34 @@ export class ChatAgent extends AIChatAgent<Env, ResolvedRules> {
    */
   @callable()
   async submitReview(diff: unknown): Promise<{ reviewId: string }> {
-    // Step 5 adds the per-IP rate limit and the daily neuron budget here
+    await enforceRateLimit(this.env.REVIEW_RATE_LIMIT, this.callerIp());
     const params: ReviewParams = {
       diff: checkDiff(diff),
       // A snapshot: rule changes during the review don't affect it
       rules: readRules(this.ruleTables).active
     };
-    const reviewId = await this.runWorkflow(REVIEW_WORKFLOW, params);
+
+    // Reserve the worst case before anything runs (D12). The split is the
+    // same one the workflow makes: it's deterministic.
+    const { chunks } = splitDiff(params.diff, chunkBudget(MODEL));
+    const reviewId = crypto.randomUUID();
+    const reservation = {
+      day: budgetDay(new Date()),
+      neurons: worstCaseNeurons(MODEL, chunks, params.rules)
+    };
+    const budget = this.env.NEURON_BUDGET.getByName(reservation.day);
+    if (!(await budget.reserve(reviewId, reservation.neurons))) {
+      throw new DailyLimitError(DAILY_LIMIT_MESSAGE);
+    }
+    this.reviews.saveReservation(reviewId, reservation);
+
+    try {
+      await this.runWorkflow(REVIEW_WORKFLOW, params, { id: reviewId });
+    } catch (error) {
+      // Nothing ran, so nothing was spent
+      await this.settleReview(reviewId, 0);
+      throw error;
+    }
     return { reviewId };
   }
 
@@ -93,12 +151,30 @@ export class ChatAgent extends AIChatAgent<Env, ResolvedRules> {
     result?: unknown
   ) {
     if (workflowName !== REVIEW_WORKFLOW) return;
-    await this.recordReview(workflowId, result as ReviewResult);
+    const { neurons, ...review } = result as ReviewRun;
+    await this.settleReview(workflowId, neurons);
+    await this.recordReview(workflowId, review);
   }
 
   async onWorkflowError(workflowName: string, workflowId: string) {
     if (workflowName !== REVIEW_WORKFLOW) return;
+    // What it spent is unknown: settle at the full reservation
+    await this.settleReview(workflowId);
     await this.recordReview(workflowId, unfinishedReview());
+  }
+
+  /**
+   * Replaces a review's reservation with what it cost, on the day's budget it
+   * was reserved against. Idempotent: the budget ignores a second settle.
+   */
+  private async settleReview(reviewId: string, neurons?: number) {
+    const reservation = this.reviews.reservation(reviewId);
+    if (!reservation) return;
+    await this.env.NEURON_BUDGET.getByName(reservation.day).settle(
+      reviewId,
+      neurons ?? reservation.neurons
+    );
+    this.reviews.deleteReservation(reviewId);
   }
 
   /** DESIGN.md §6, step 8: store once, then post the summary to the chat. */
@@ -114,6 +190,16 @@ export class ChatAgent extends AIChatAgent<Env, ResolvedRules> {
   }
 
   async onChatMessage(_onFinish: unknown, options?: OnChatMessageOptions) {
+    // Every turn from a browser counts, approval continuations included.
+    // Recovery after an eviction has no connection: it resumes a turn that
+    // was already counted.
+    if (getCurrentAgent().connection) {
+      const { success } = await this.env.CHAT_RATE_LIMIT.limit({
+        key: rateLimitKey(this.callerIp())
+      });
+      if (!success) return chatErrorResponse(RATE_LIMITED_MESSAGE);
+    }
+
     const workersai = createWorkersAI({ binding: this.env.AI });
 
     const result = streamText({

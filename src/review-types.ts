@@ -64,7 +64,10 @@ export interface TokenUsage {
 export type ChunkOutcome =
   | ({
       reviewed: true;
+      /** The last call's usage; earlier failed attempts report none. */
       usage: TokenUsage;
+      /** Which attempt succeeded: 1 on the first try. */
+      attempt: number;
       /**
        * The model returned at least MAX_FINDINGS_PER_CHUNK findings, valid or
        * not, so it may have left violations out.

@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
 import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it } from "vitest";
+import { splitDiff } from "./diff-split";
+import { MODEL } from "./model-config";
+import { callNeurons, chunkCallWorstCase } from "./review-cost";
 import { runReview, type RunStep } from "./review-pipeline";
+import { chunkBudget } from "./token-budget";
 import { MAX_FINDINGS_PER_CHUNK } from "./review-prompt";
 import type { ActiveRule } from "./rules";
 
@@ -64,7 +68,7 @@ function steps() {
   const names: string[] = [];
   const run: RunStep = (name, work) => {
     names.push(name);
-    return work();
+    return work(1);
   };
   return { run, names };
 }
@@ -117,7 +121,9 @@ describe("runReview", () => {
 
   it("records a chunk whose step keeps failing as not reviewed", async () => {
     const failing: RunStep = (name, work) =>
-      name.startsWith("review chunk") ? Promise.reject(new Error("x")) : work();
+      name.startsWith("review chunk")
+        ? Promise.reject(new Error("x"))
+        : work(1);
     const result = await runReview(DIFF, RULES, answering([]), failing);
     expect(result).toMatchObject({
       verdict: "incomplete",
@@ -154,5 +160,34 @@ describe("runReview", () => {
       "Review incomplete: `src/db/find-order.min.ts` was skipped as minified or generated and could hide code that breaks the rules.",
       "Nothing to review: every file in the diff was skipped."
     ]);
+    // Nothing was sent to the model, so there's nothing to charge
+    expect(result.neurons).toBe(0);
+  });
+});
+
+describe("runReview cost, to settle the reservation (D12)", () => {
+  const [chunk] = splitDiff(DIFF, chunkBudget(MODEL)).chunks;
+  const worst = chunkCallWorstCase(MODEL, chunk, RULES);
+  const reported = callNeurons(MODEL, 1_000, 100);
+
+  it("is the reported usage when the chunk succeeds first time", async () => {
+    const result = await runReview(DIFF, RULES, answering([]), steps().run);
+    expect(result.neurons).toBe(Math.ceil(reported));
+  });
+
+  it("adds each failed attempt before the success at its worst case", async () => {
+    const onThirdAttempt: RunStep = (name, work) =>
+      work(name.startsWith("review chunk") ? 3 : 1);
+    const result = await runReview(DIFF, RULES, answering([]), onThirdAttempt);
+    expect(result.neurons).toBe(Math.ceil(reported + 2 * worst));
+  });
+
+  it("charges a chunk that never got through all its attempts", async () => {
+    const failing: RunStep = (name, work) =>
+      name.startsWith("review chunk")
+        ? Promise.reject(new Error("x"))
+        : work(1);
+    const result = await runReview(DIFF, RULES, answering([]), failing);
+    expect(result.neurons).toBe(Math.ceil(3 * worst));
   });
 });

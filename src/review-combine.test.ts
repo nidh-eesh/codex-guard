@@ -44,6 +44,7 @@ const reviewed = (
   dropped: droppedForErrorRules,
   droppedForErrorRules,
   atCap,
+  attempt: 1,
   usage: { inputTokens: 100, outputTokens: 10 }
 });
 

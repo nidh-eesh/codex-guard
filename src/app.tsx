@@ -437,7 +437,9 @@ function Chat({ workspaceId }: { workspaceId: string }) {
     clearHistory,
     addToolApprovalResponse,
     stop,
-    status
+    status,
+    // A turn the server refused, e.g. over the per-IP limit (DESIGN.md §5)
+    error: chatError
   } = useAgentChat({
     agent,
     experimental_throttle: 100
@@ -687,6 +689,11 @@ function Chat({ workspaceId }: { workspaceId: string }) {
           }}
           className="max-w-3xl mx-auto px-5 py-4"
         >
+          {chatError && (
+            <p role="alert" className="mb-2 text-sm text-kumo-danger">
+              {chatError.message}
+            </p>
+          )}
           <div className="flex items-end gap-3 rounded-xl border border-kumo-line bg-kumo-base p-3 shadow-sm focus-within:ring-2 focus-within:ring-kumo-ring focus-within:border-transparent transition-shadow">
             <InputArea
               ref={textareaRef}

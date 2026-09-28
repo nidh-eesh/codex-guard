@@ -6,6 +6,7 @@ import {
 } from "agents/workflows";
 import { createWorkersAI } from "workers-ai-provider";
 import { MODEL } from "./model-config";
+import { STEP_RETRIES } from "./review-cost";
 import { runReview } from "./review-pipeline";
 import type { ActiveRule } from "./rules";
 import type { ChatAgent } from "./server";
@@ -19,7 +20,7 @@ export interface ReviewParams {
 // At most 2 retries, 2 seconds apart, instead of the Workflows default of 5
 // starting at 10 seconds (D10). Outputs hold findings, so they're sensitive.
 const STEP = {
-  retries: { limit: 2, delay: "2 seconds", backoff: "constant" },
+  retries: { limit: STEP_RETRIES, delay: "2 seconds", backoff: "constant" },
   sensitive: "output"
 } as const satisfies WorkflowStepConfig;
 
@@ -32,7 +33,9 @@ export class ReviewWorkflow extends AgentWorkflow<ChatAgent, ReviewParams> {
     const { diff, rules } = event.payload;
     const model = createWorkersAI({ binding: this.env.AI })(MODEL.id);
     const result = await runReview(diff, rules, model, (name, work) =>
-      step.do(name, STEP, work)
+      // ctx.attempt is 1 on the first try, so settlement can charge the
+      // failed attempts before it
+      step.do(name, STEP, (ctx) => work(ctx.attempt))
     );
     await step.reportComplete(result);
   }

@@ -2,6 +2,7 @@ import type { LanguageModel } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
 import { getPlatformProxy } from "wrangler";
 import { MODEL } from "../src/model-config";
+import { STEP_RETRIES } from "../src/review-cost";
 import type { RunStep } from "../src/review-pipeline";
 
 /**
@@ -25,9 +26,9 @@ export async function connectReviewModel(): Promise<{
 /** Runs a step in memory with the workflow's limit: at most 2 retries (D10). */
 export const retryingStep: RunStep = async (_name, work) => {
   let lastError: unknown;
-  for (let attempt = 0; attempt <= 2; attempt++) {
+  for (let attempt = 1; attempt <= 1 + STEP_RETRIES; attempt++) {
     try {
-      return await work();
+      return await work(attempt);
     } catch (error) {
       lastError = error;
     }

@@ -18,9 +18,27 @@
       {
         "class_name": "ChatAgent",
         "name": "ChatAgent"
+      },
+      // The day's review budget (D12): a plain Durable Object per UTC date
+      {
+        "class_name": "NeuronBudget",
+        "name": "NEURON_BUDGET"
       }
     ]
   },
+  // Per-IP limits (D12), keyed by the IP read when the WebSocket connects
+  "ratelimits": [
+    {
+      "name": "REVIEW_RATE_LIMIT",
+      "namespace_id": "1001",
+      "simple": { "limit": 3, "period": 60 }
+    },
+    {
+      "name": "CHAT_RATE_LIMIT",
+      "namespace_id": "1002",
+      "simple": { "limit": 10, "period": 60 }
+    }
+  ],
   "workflows": [
     {
       "name": "review-workflow",
@@ -32,6 +50,10 @@
     {
       "new_sqlite_classes": ["ChatAgent"],
       "tag": "v1"
+    },
+    {
+      "new_sqlite_classes": ["NeuronBudget"],
+      "tag": "v2"
     }
   ]
 }
