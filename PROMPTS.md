@@ -177,3 +177,17 @@ Before you start 4b a decision on the findings cap:
 ````text
 Measurement accepted. Keep 25 as maxOutputTokens / 120. Write D21 and the D10, Section 5 and section 6 changes as drafted. The cap note on fail verdicts is fine. Also write the three 4a items: the "couldn't be finished" message, the all-files-skipped behaviour, and withholding unusual file names (update D9 for that one). Then give me commit messages that split the work into: the cap and saturation behaviour, the pipeline refactor, the eval set, and the docs. Then start 4b: signatures and tests only, and stop.
 ````
+
+### 2026-09-28 06:12 UTC
+
+````text
+Change of plan: you build the rest, and I review each step before it's committed.
+1. Update AGENTS.md's "Author-owned modules" honestly: resolveRules is written by me; token budget, diff splitting and finding validation are written by the agent and reviewed by me. Remove the claim that every (section 7) guarantee has a human author; say they have a human reviewer.
+2. Implement 4b so all tests pass, with these decisions:
+2.1. message and suggestion: at most 500 characters each
+2.2. chunk text shows plain paths (no a/ or b/). The validator accepts an exact file match, or, failing that, strips one leading a/, b/ or ./ and accepts only if the result exactly matches a chunk file. Resolve the todo test that way
+2.3. one token estimator everywhere (3 characters per token). Compute the rules reserve from MAX_ACTIVE_RULES and the maximum rule line, update D5's number and the test pinning 17,000
+2.4. keep the chunk target at 12,000 and state in a comment that the 18k two-chunk bound is 1.5 × the target
+3. After 4b: run npm run eval once (not the findings-cap measurement), and check the line numbers are now exact.
+4. Stop after 4b with commit messages. Don't start step 5 until I say so.
+````

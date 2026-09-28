@@ -19,19 +19,19 @@ Instructions for AI coding agents working in this repo. `DESIGN.md` is the sourc
 ## Conventions
 
 - TypeScript strict mode. Zod at every boundary (tool inputs, model outputs, request params).
-- Error messages match `DESIGN.md` ##5 exactly.
+- Error messages match `DESIGN.md` §5 exactly.
 - Diff chunks are packed first-fit: each file or piece goes into the first open chunk with room, not just the last one. D6's at-most-2-chunks bound depends on it; a property test checks that any diff up to 18k tokens packs into at most 2 chunks, none over 12k.
 - Vitest tests for every rule-logic change and every error message.
 - Small commits, one concern each.
 - When a decision in `DESIGN.md` changes, update `DESIGN.md` in the same commit.
 
-## Author-owned modules
+## Reviewed modules
 
-The security and correctness-critical logic is written by the author, so every guarantee in `DESIGN.md` ##7 has a human owner. For these modules, agents review, explain, find bugs, and propose test cases; the implementation itself is the author's:
+Every guarantee in `DESIGN.md` §7 has a human reviewer: the author reviews every change to these modules before it is committed.
 
-- Active-rules resolution (starter pack − disabled defaults + custom rules; locked rules always active)
-- Finding validation (Zod schema plus the `ruleId`, `file` and line checks)
-- Diff splitting and the per-call token budget
+- Active-rules resolution (`resolveRules`: starter pack − disabled defaults + custom rules; locked rules always active). Written by the author. Agents review, explain, find bugs and propose test cases, but don't change the implementation.
+- Finding validation (Zod schema plus the `ruleId`, `file` and line checks). Written by an agent, reviewed by the author.
+- Diff splitting and the per-call token budget. Written by an agent, reviewed by the author.
 
 ## Logging
 
