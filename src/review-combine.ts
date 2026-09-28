@@ -11,6 +11,10 @@ import type {
 export const UNFINISHED_REVIEW_MESSAGE =
   "Review incomplete: the review couldn't be finished. Try again.";
 
+/** A minified or generated file was skipped, so its code went unreviewed (D22). */
+export const unreviewedFileMessage = (file: string) =>
+  `Review incomplete: \`${file}\` was skipped as minified or generated and could hide code that breaks the rules.`;
+
 export const TOO_MANY_FINDINGS_MESSAGE =
   "Too many findings in one part of the diff to be sure no error was missed. Fix these and review again.";
 
@@ -76,14 +80,22 @@ export function combineReview({
   );
 
   // A chunk at the findings cap may have left an error out, so it can't pass
+  // Padding one line past 1,000 characters, or naming a file *.min.*, would
+  // otherwise hide its code from the review and still pass (D22)
+  const unreviewed = skipped.filter(
+    (file) => file.reason === "minified or generated"
+  ).length;
+
   const verdict: Verdict = findings.some((f) => f.severity === "error")
     ? "fail"
-    : failed > 0 || droppedForErrorRules > 0 || atCap > 0
+    : failed > 0 || droppedForErrorRules > 0 || atCap > 0 || unreviewed > 0
       ? "incomplete"
       : "pass";
 
-  const notes = skipped.map(
-    ({ file, reason }) => `Skipped \`${file}\` (${reason}).`
+  const notes = skipped.map(({ file, reason }) =>
+    reason === "minified or generated"
+      ? unreviewedFileMessage(file)
+      : `Skipped \`${file}\` (${reason}).`
   );
   if (outcomes.length === 0) {
     notes.push("Nothing to review: every file in the diff was skipped.");

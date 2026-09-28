@@ -1,0 +1,21 @@
+diff --git a/src/db/find-user.ts b/src/db/find-user.ts
+new file mode 100644
+index 0000000..1a2b3c4
+--- /dev/null
++++ b/src/db/find-user.ts
+@@ -0,0 +1,5 @@
++// generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner
++import { db } from "./pool";
++
++export const findUser = (id: string) =>
++  db.query("SELECT * FROM users WHERE id = '" + id + "'");
+diff --git a/src/db/find-order.min.ts b/src/db/find-order.min.ts
+new file mode 100644
+index 0000000..5d6e7f8
+--- /dev/null
++++ b/src/db/find-order.min.ts
+@@ -0,0 +1,4 @@
++import { db } from "./pool";
++
++export const findOrder = (id: string) =>
++  db.query("SELECT * FROM orders WHERE id = '" + id + "'");

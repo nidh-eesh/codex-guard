@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { combineReview, unfinishedReview } from "./review-combine";
-import type { ChunkOutcome, ModelFinding } from "./review-types";
+import type { ChunkOutcome, ModelFinding, SkipReason } from "./review-types";
 import type { ActiveRule } from "./rules";
 
 const rule = (
@@ -215,19 +215,21 @@ describe("combineReview findings", () => {
 });
 
 describe("combineReview notes", () => {
-  it("notes each skipped file", () => {
+  it("notes each skipped file, in order, naming unreviewed code (D22)", () => {
     const result = combineReview({
       outcomes: [reviewed()],
       secretFindings: [],
       skipped: [
         { file: "package-lock.json", reason: "lockfile" },
-        { file: "dist/app.min.js", reason: "minified or generated" }
+        { file: "dist/app.min.js", reason: "minified or generated" },
+        { file: "logo.png", reason: "binary" }
       ],
       rules: RULES
     });
     expect(result.notes).toEqual([
       "Skipped `package-lock.json` (lockfile).",
-      "Skipped `dist/app.min.js` (minified or generated)."
+      "Review incomplete: `dist/app.min.js` was skipped as minified or generated and could hide code that breaks the rules.",
+      "Skipped `logo.png` (binary)."
     ]);
   });
 
@@ -241,6 +243,40 @@ describe("combineReview notes", () => {
     expect(result.notes).toEqual([
       "Skipped `logo.png` (binary).",
       "Nothing to review: every file in the diff was skipped."
+    ]);
+  });
+});
+
+describe("combineReview with a skipped minified or generated file (D22)", () => {
+  const skippedAs = (reason: SkipReason) =>
+    combineReview({
+      outcomes: [reviewed([finding("no-console-log")])],
+      secretFindings: [],
+      skipped: [{ file: "src/db/find-user.ts", reason }],
+      rules: RULES
+    });
+
+  it("is incomplete, never pass, even when the rest has only warnings", () => {
+    expect(skippedAs("minified or generated").verdict).toBe("incomplete");
+  });
+
+  it.each<SkipReason>(["lockfile", "binary"])(
+    "still passes when only a %s was skipped",
+    (reason) => {
+      expect(skippedAs(reason).verdict).toBe("pass");
+    }
+  );
+
+  it("fails when an error finding survives, keeping the note", () => {
+    const result = combineReview({
+      outcomes: [reviewed([finding("validate-input")])],
+      secretFindings: [],
+      skipped: [{ file: "app.min.js", reason: "minified or generated" }],
+      rules: RULES
+    });
+    expect(result.verdict).toBe("fail");
+    expect(result.notes).toEqual([
+      "Review incomplete: `app.min.js` was skipped as minified or generated and could hide code that breaks the rules."
     ]);
   });
 

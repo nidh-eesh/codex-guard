@@ -80,7 +80,7 @@ One entry per design decision: what was decided, the options, and why. Newest la
 - **Options:** (a) pass unless a valid error finding survives; (b) retry until everything validates; (c) three verdicts (pass, fail, incomplete), with severity looked up from the rule.
 - **Decision:** (c).
 - **Why:** With (a), invalid output, or a violation labelled "warning", turns into a pass, and a silent pass is the worst outcome for a guardrail. (b) loops forever on a failure that repeats every time.
-- **Consequences:** The verdict is `incomplete` whenever a chunk failed after its retries, a finding for an error-severity rule was discarded, or a chunk's answer reached the findings cap without an error finding (D21), and each count is shown. `severity` is removed from the model's output schema. Each step retries at most 2 times with a 2-second delay, instead of the Workflows default of 5 retries starting at 10 seconds. If `incomplete` turns out to be common, fix line anchoring (D13) rather than loosening this rule.
+- **Consequences:** The verdict is `incomplete` whenever a chunk failed after its retries, a finding for an error-severity rule was discarded, a chunk's answer reached the findings cap without an error finding (D21), or a file was skipped as minified or generated (D22), and each count is shown. `severity` is removed from the model's output schema. Each step retries at most 2 times with a 2-second delay, instead of the Workflows default of 5 retries starting at 10 seconds. If `incomplete` turns out to be common, fix line anchoring (D13) rather than loosening this rule.
 
 ## D11 - Custom rule text is untrusted input to the review
 
@@ -170,3 +170,11 @@ One entry per design decision: what was decided, the options, and why. Newest la
 - **Decision:** (c). The cap is `maxOutputTokens` / 120, which is 25, and the JSON schema has no `maxItems`.
 - **Why:** (a) hides real violations, and a schema limit would make JSON mode refuse a longer answer and fail the chunk. (b) addresses an overflow the measurement didn't show. A model that filled its quota may have stopped early, so without an error finding the honest verdict is incomplete (D10).
 - **Consequences:** A chunk whose answer has at least 25 findings, valid or not, adds "Too many findings in one part of the diff to be sure no error was missed. Fix these and review again." Without an error finding the verdict is `incomplete`; with one it fails as usual. Rerun `npm run eval:findings-cap` after changing the review prompt or model.
+
+## D22 - A skipped minified or generated file blocks a pass
+
+- **Context:** Files named like `*.min.*` or `*.map`, or with an added line over 1,000 characters, are skipped (D6), because they pack far more tokens per character than the estimate assumes. Review found a bypass: pad one line past 1,000 characters, or name the file `*.min.ts`, and its code is never reviewed, yet the verdict is pass. Only the `no-secrets` regex still runs over it (D11).
+- **Options:** (a) keep skipping and pass; (b) review such files anyway; (c) keep skipping, but make the verdict incomplete and name each file.
+- **Decision:** (c).
+- **Why:** (a) lets anyone hide code from the guardrail by padding a line, and a silent pass is the worst outcome for a guardrail (D10). (b) breaks the token estimate the chunk budget depends on (D6), and the model can't reliably review minified code. (c) fails closed: the file isn't reviewed, and the verdict says so.
+- **Consequences:** A diff with such a file can't pass. It is incomplete, or fails on an error finding elsewhere, including a `no-secrets` hit in the skipped file itself. Each file gets the note "Review incomplete: `{file}` was skipped as minified or generated and could hide code that breaks the rules." Lockfiles and binary files are still skipped with the plain note and don't block a pass; supply-chain review of them is out of scope (§8).

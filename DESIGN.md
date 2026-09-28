@@ -70,36 +70,37 @@ The chat model is called without token streaming: the provider doubles streamed 
 
 Messages are exact strings, including the backticks.
 
-| Case                                                                              | Message                                                                                                 |
-| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Rule text empty, or outside 10–200 characters                                     | "Rule text must be between 10 and 200 characters."                                                      |
-| Duplicate rule                                                                    | "A rule with this text already exists."                                                                 |
-| Adding or restoring a 51st rule                                                   | "This workspace has 50 rules, the maximum. Remove one first."                                           |
-| Unknown rule ID                                                                   | "No rule with ID `{ruleId}` exists in this workspace."                                                  |
-| Removing or switching off a locked rule                                           | "Rule `{ruleId}` is locked and can't be switched off."                                                  |
-| Switching off a recommended rule without a reason                                 | "A reason is required to switch off a recommended rule."                                                |
-| A reason over 200 characters                                                      | "The reason must be at most 200 characters."                                                            |
-| Switching off a rule that is already switched off                                 | "Rule `{ruleId}` is already switched off."                                                              |
-| Restoring a rule that isn't switched off                                          | "Rule `{ruleId}` is not switched off."                                                                  |
-| Empty diff                                                                        | "The diff is empty. Paste a unified diff to review."                                                    |
-| Not a unified diff (no `@@` hunk header)                                          | "This doesn't look like a unified diff. Paste the output of `git diff`."                                |
-| A file was skipped; `{reason}` is `lockfile`, `binary` or `minified or generated` | "Skipped `{file}` ({reason})."                                                                          |
-| Every file in the diff was skipped                                                | "Nothing to review: every file in the diff was skipped."                                                |
-| Diff over 50 KB (`MAX_DIFF_BYTES = 50_000`)                                       | "The diff is larger than 50 KB. Split it into smaller reviews."                                         |
-| Per-IP rate limit reached                                                         | "Too many requests. Try again in a minute."                                                             |
-| Daily review budget used up                                                       | "The daily review limit has been reached. Try again tomorrow."                                          |
-| A chunk failed after its retries                                                  | "Review incomplete: {n} of {total} chunks couldn't be reviewed."                                        |
-| A finding for an error-severity rule failed validation                            | "Review incomplete: {m} findings for error rules failed validation."                                    |
-| A chunk's answer reached the findings cap                                         | "Too many findings in one part of the diff to be sure no error was missed. Fix these and review again." |
-| The review workflow itself failed                                                 | "Review incomplete: the review couldn't be finished. Try again."                                        |
-| Invalid workspace ID                                                              | "This workspace link is invalid." (shown by the browser; the server answers HTTP 400)                   |
+| Case                                                     | Message                                                                                                       |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Rule text empty, or outside 10–200 characters            | "Rule text must be between 10 and 200 characters."                                                            |
+| Duplicate rule                                           | "A rule with this text already exists."                                                                       |
+| Adding or restoring a 51st rule                          | "This workspace has 50 rules, the maximum. Remove one first."                                                 |
+| Unknown rule ID                                          | "No rule with ID `{ruleId}` exists in this workspace."                                                        |
+| Removing or switching off a locked rule                  | "Rule `{ruleId}` is locked and can't be switched off."                                                        |
+| Switching off a recommended rule without a reason        | "A reason is required to switch off a recommended rule."                                                      |
+| A reason over 200 characters                             | "The reason must be at most 200 characters."                                                                  |
+| Switching off a rule that is already switched off        | "Rule `{ruleId}` is already switched off."                                                                    |
+| Restoring a rule that isn't switched off                 | "Rule `{ruleId}` is not switched off."                                                                        |
+| Empty diff                                               | "The diff is empty. Paste a unified diff to review."                                                          |
+| Not a unified diff (no `@@` hunk header)                 | "This doesn't look like a unified diff. Paste the output of `git diff`."                                      |
+| A file was skipped; `{reason}` is `lockfile` or `binary` | "Skipped `{file}` ({reason})."                                                                                |
+| A file was skipped as minified or generated              | "Review incomplete: `{file}` was skipped as minified or generated and could hide code that breaks the rules." |
+| Every file in the diff was skipped                       | "Nothing to review: every file in the diff was skipped."                                                      |
+| Diff over 50 KB (`MAX_DIFF_BYTES = 50_000`)              | "The diff is larger than 50 KB. Split it into smaller reviews."                                               |
+| Per-IP rate limit reached                                | "Too many requests. Try again in a minute."                                                                   |
+| Daily review budget used up                              | "The daily review limit has been reached. Try again tomorrow."                                                |
+| A chunk failed after its retries                         | "Review incomplete: {n} of {total} chunks couldn't be reviewed."                                              |
+| A finding for an error-severity rule failed validation   | "Review incomplete: {m} findings for error rules failed validation."                                          |
+| A chunk's answer reached the findings cap                | "Too many findings in one part of the diff to be sure no error was missed. Fix these and review again."       |
+| The review workflow itself failed                        | "Review incomplete: the review couldn't be finished. Try again."                                              |
+| Invalid workspace ID                                     | "This workspace link is invalid." (shown by the browser; the server answers HTTP 400)                         |
 
 ## 6. Review workflow
 
 1. **Submit:** the diff is pasted into the review box, which calls the agent directly (a callable method), never the chat model (D8). The agent checks the per-IP limit and reserves the review's worst-case cost against the daily budget (D12).
 2. **Validate** the diff (§5).
 3. **Start** `ReviewWorkflow` with `runWorkflow`, passing the diff and a snapshot of the active rules. The whole review uses that snapshot.
-4. **Split:** skip lockfiles, binary files, and minified or generated files (names like `*.min.*` and `*.map`, or any added line over 1,000 characters), with a note for each; the `no-secrets` regex still runs over them. Prefix each added and context line with its new-file line number (D13); sizes include the prefixes. Split a file larger than one chunk by hunk, and a hunk larger than one chunk into windows of lines. Then pack files and pieces **first-fit**: each goes into the first chunk with room, checking every open chunk, not just the last one. If every file is skipped, nothing is sent to the review model, but the `no-secrets` check still runs: the review passes with the "Nothing to review" note unless the check finds a key, which fails it.
+4. **Split:** skip lockfiles, binary files, and minified or generated files (names like `*.min.*` and `*.map`, or any added line over 1,000 characters), with a note for each; a skipped minified or generated file makes the verdict incomplete (D22); the `no-secrets` regex still runs over them. Prefix each added and context line with its new-file line number (D13); sizes include the prefixes. Split a file larger than one chunk by hunk, and a hunk larger than one chunk into windows of lines. Then pack files and pieces **first-fit**: each goes into the first chunk with room, checking every open chunk, not just the last one. If every file is skipped, nothing is sent to the review model, but the `no-secrets` check still runs: the review fails if it finds a key, is incomplete if any file was skipped as minified or generated (D22), and otherwise passes with the "Nothing to review" note.
 5. **Review** each chunk with the review model (no tools, JSON mode), asking for at most 25 findings (`maxOutputTokens` / 120). The cap is an instruction, not a limit: every valid finding is kept (D21).
 6. **Validate** each finding (§7).
 7. **Combine:** remove duplicates (same `ruleId`, `file` and `line`), look up each finding's severity from its rule, sort by severity, decide the verdict.
@@ -112,7 +113,7 @@ Messages are exact strings, including the backticks.
 **Verdict:**
 
 - **fail** if any finding that survives validation violates an error-severity rule;
-- otherwise **incomplete** if a chunk failed after its retries, a finding for an error-severity rule was discarded, or a chunk's answer reached the findings cap (D21), with each count shown;
+- otherwise **incomplete** if a chunk failed after its retries, a finding for an error-severity rule was discarded, a chunk's answer reached the findings cap (D21), or a file was skipped as minified or generated (D22), with each count shown;
 - otherwise **pass**, listing warnings.
 
 **Retries:** each step retries at most 2 times with a 2-second delay (the Workflows default is 5 retries starting at 10 seconds). A chunk that still fails is recorded as not reviewed; it doesn't fail the workflow.
@@ -145,5 +146,7 @@ Messages are exact strings, including the backticks.
 - GitHub pull-request integration
 - Diffs larger than 50 KB (200 KB with a larger-context model or the Paid plan; D6)
 - Choosing between models (for example GLM-4.7-Flash); the budget already reads the context window, maximum output and prices from the model config
+- Supply-chain review of lockfiles and binary files
+- A code file named like a lockfile (for example `src/db/yarn.lock`, loaded with `require`) is skipped unreviewed; only the `no-secrets` check scans it.
 
 Decisions and their reasoning are logged in [`docs/DECISIONS.md`](docs/DECISIONS.md).

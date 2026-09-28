@@ -11,5 +11,9 @@
     "file": "key-and-sql.diff",
     "verdict": "fail",
     "mustFind": ["no-secrets", "sql-parameterized"]
+  },
+  {
+    "file": "minified-bypass.diff",
+    "verdict": "incomplete"
   }
 ]

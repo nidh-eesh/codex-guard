@@ -191,3 +191,46 @@ Change of plan: you build the rest, and I review each step before it's committed
 3. After 4b: run npm run eval once (not the findings-cap measurement), and check the line numbers are now exact.
 4. Stop after 4b with commit messages. Don't start step 5 until I say so.
 ````
+
+### 2026-09-28 14:20 UTC
+
+````text
+4b is now committed. I found a bypass during review. A long diff file maybe 1000 characters minified file is skipped but the verdict is pass. A file skipped as minified or generated should make the verdict incomplete with as note naming the dif as it could be hiding attacks. Add a test with this diff "
+
+<pasted_content id="2b91">
+diff --git a/src/db/find-user.ts b/src/db/find-user.ts
+new file mode 100644
+index 0000000..1a2b3c4
+--- /dev/null
++++ b/src/db/find-user.ts
+@@ -0,0 +1,5 @@
++// generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner generated banner 
++import { db } from "./pool";
++
++export const findUser = (id: string) =>
++  db.query("SELECT * FROM users WHERE id = '" + id + "'");
+diff --git a/src/db/find-order.min.ts b/src/db/find-order.min.ts
+new file mode 100644
+index 0000000..5d6e7f8
+--- /dev/null
++++ b/src/db/find-order.min.ts
+@@ -0,0 +1,4 @@
++import { db } from "./pool";
++
++export const findOrder = (id: string) =>
++  db.query("SELECT * FROM orders WHERE id = '" + id + "'");
+</pasted_content id="2b91">
+
+". Also reflect as decision D22. Update design section 5 and 6, and wait for my OK. Then stop, don't start step 5.
+````
+
+### 2026-09-28 14:31 UTC
+
+````text
+D22 approved, with the D10 line. Write the docs and commit as one commit as you proposed, also add minified-bypass.diff to cases.json
+Lockfiles and binaries stay skipped. Add to DESIGN 8: "Supply-chain review of lockfiles and binary files" and "A code file named like a lockfile (for example src/db/yarn.lock, loaded with require) is skipped unreviewed; only the no-secrets check scans it." 
+Then start step5, cost controls:
+1. the per-IP rate limit on review submissions and chat turns, keyed by CF-Connecting-IP read when the WebSocket connects,
+2. the daily neuron budget as a plain DurableObject keyed by UTC date, not an Agent, with a test that /agents/* can't reach it,
+3. reserve the worst case before a review and settle it with the real usage after.
+````

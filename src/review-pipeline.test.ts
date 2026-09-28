@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it } from "vitest";
 import { runReview, type RunStep } from "./review-pipeline";
@@ -135,5 +136,23 @@ describe("runReview", () => {
       steps().run
     );
     expect(result.findings[0].message).toBe("Key [REDACTED] found.");
+  });
+
+  it("doesn't pass code hidden in files skipped as minified or generated (D22)", async () => {
+    // A padded first line (over 1,000 characters) and a *.min.ts name: both
+    // files are skipped, and both hide an SQL injection
+    const diff = readFileSync(
+      new URL("../fixtures/reviews/minified-bypass.diff", import.meta.url),
+      "utf8"
+    );
+    const model = answering([]);
+    const result = await runReview(diff, RULES, model, steps().run);
+    expect(model.doGenerateCalls).toHaveLength(0);
+    expect(result.verdict).toBe("incomplete");
+    expect(result.notes).toEqual([
+      "Review incomplete: `src/db/find-user.ts` was skipped as minified or generated and could hide code that breaks the rules.",
+      "Review incomplete: `src/db/find-order.min.ts` was skipped as minified or generated and could hide code that breaks the rules.",
+      "Nothing to review: every file in the diff was skipped."
+    ]);
   });
 });
