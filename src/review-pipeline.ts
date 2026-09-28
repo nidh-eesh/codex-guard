@@ -1,6 +1,7 @@
 import type { LanguageModel } from "ai";
 import { splitDiff } from "./diff-split";
 import { validateFindings } from "./finding-validation";
+import { MODEL } from "./model-config";
 import { combineReview } from "./review-combine";
 import { reviewChunk } from "./review-model";
 import { MAX_FINDINGS_PER_CHUNK } from "./review-prompt";
@@ -8,6 +9,7 @@ import { redactReview } from "./review-summary";
 import type { Chunk, ChunkOutcome, ReviewResult } from "./review-types";
 import type { ActiveRule } from "./rules";
 import { findSecrets, redactSecrets } from "./secrets";
+import { chunkBudget } from "./token-budget";
 
 /**
  * Runs one named step and returns its result. The workflow persists and
@@ -47,7 +49,9 @@ export async function runReview(
   model: LanguageModel,
   step: RunStep
 ): Promise<ReviewResult> {
-  const split = await step("split", async () => splitDiff(diff));
+  const split = await step("split", async () =>
+    splitDiff(diff, chunkBudget(MODEL))
+  );
 
   const outcomes = await Promise.all(
     split.chunks.map((chunk, i) =>

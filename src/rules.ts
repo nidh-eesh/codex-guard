@@ -6,6 +6,8 @@ export const RULE_TEXT_MAX_LENGTH = 200;
 export const MAX_ACTIVE_RULES = 50;
 /** Custom rule IDs start with this, so they can't collide with starter IDs. */
 export const CUSTOM_RULE_ID_PREFIX = "c_";
+/** The prefix and 8 hex characters. */
+export const CUSTOM_RULE_ID_LENGTH = CUSTOM_RULE_ID_PREFIX.length + 8;
 
 /** A rule in the starter pack. `locked` exists only here (D7). */
 export interface StarterRule {

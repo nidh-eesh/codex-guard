@@ -1,5 +1,6 @@
 import { resolveRules } from "./active-rules";
 import {
+  CUSTOM_RULE_ID_LENGTH,
   CUSTOM_RULE_ID_PREFIX,
   MAX_ACTIVE_RULES,
   RULE_TEXT_MAX_LENGTH,
@@ -88,7 +89,9 @@ function hasText(rules: readonly ActiveRule[], text: string): boolean {
 }
 
 export function newCustomRuleId(): string {
-  return `${CUSTOM_RULE_ID_PREFIX}${crypto.randomUUID().slice(0, 8)}`;
+  // A UUID starts with 8 hex characters
+  const hex = CUSTOM_RULE_ID_LENGTH - CUSTOM_RULE_ID_PREFIX.length;
+  return `${CUSTOM_RULE_ID_PREFIX}${crypto.randomUUID().slice(0, hex)}`;
 }
 
 // Each change reads, checks and writes without awaiting in between. A Durable

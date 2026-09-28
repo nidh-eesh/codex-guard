@@ -21,7 +21,15 @@ const RULES: ActiveRule[] = [
   }
 ];
 
-const DIFF = "diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n+console.log(1);\n";
+// A new file of 30 lines, so findings can point at lines 1-30
+const DIFF = `${[
+  "diff --git a/a.ts b/a.ts",
+  "new file mode 100644",
+  "--- /dev/null",
+  "+++ b/a.ts",
+  "@@ -0,0 +1,30 @@",
+  ...Array.from({ length: 30 }, (_, i) => `+console.log(${i + 1});`)
+].join("\n")}\n`;
 
 const warning = (line: number) => ({
   ruleId: "no-console-log",

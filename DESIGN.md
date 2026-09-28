@@ -38,8 +38,8 @@ A guardrail agent for engineering teams, built on Cloudflare. Each workspace sta
 
 **Limits**
 
-- Rule text: 10–200 characters (about 50 tokens; about 60 with ID and severity).
-- At most 50 active rules in total, including the starter pack. Every active rule goes into every review call: 50 × ~60 tokens ≈ 3k of the 24k-token context. Restoring a switched-off default counts as adding a rule (D18).
+- Rule text: 10–200 characters. At 3 characters per token (the one estimator, D6), a rule's line in the review prompt is at most 81 tokens with its ID, severity and lock marker.
+- At most 50 active rules in total, including the starter pack. Every active rule goes into every review call: 50 × 81 = 4,050 tokens of the 24k-token context. Restoring a switched-off default counts as adding a rule (D18).
 - Reason for switching off a recommended rule: at most 200 characters (D19).
 
 **Starter pack**
@@ -105,7 +105,7 @@ Messages are exact strings, including the backticks.
 7. **Combine:** remove duplicates (same `ruleId`, `file` and `line`), look up each finding's severity from its rule, sort by severity, decide the verdict.
 8. **Store** the review in SQLite (`reviews`: `{ id, createdAt, verdict, findings }`) from `onWorkflowComplete`. `id` is the workflow instance ID, so a retried save doesn't store the review twice. Before storing, the `no-secrets` patterns are run over each finding's `message` and `suggestion`, and matches are masked. Post a summary to the chat with `persistMessages`; the chat model sees only each finding's `ruleId`, `file` and `line` and the verdict, with a `file` that isn't a plain path withheld, while `message` and `suggestion` are shown in the UI only (D9). If the workflow itself fails, the review is stored as `incomplete` with the §5 message, so it never reads as a pass. Settle the cost reservation with the `usage` each call returned.
 
-**Token budget per call:** the 24k context holds the answer (`max_tokens` = 3k, set explicitly because the Workers AI default is 256), the system prompt (~1k), the active rules (≤ ~3k) and the chunk. That leaves about 17k for the chunk; chunks target 12k tokens, estimated at 3 characters per token for code, line-number prefixes included. The budget is computed from the model config, not hard-coded.
+**Token budget per call:** the 24k context holds the answer (`max_tokens` = 3k, set explicitly because the Workers AI default is 256), the system prompt (1k reserved), the active rules (4,050 reserved: 50 rules at the longest line) and the chunk. That leaves 15,950 for the chunk; chunks target 12k tokens (half the context window), estimated at 3 characters per token, line-number prefixes included. The same estimator sizes the rules reserve. The 18k two-chunk bound below is 1.5 × the target. The budget is computed from the model config, not hard-coded.
 
 **Model output:** `{ ruleId, file, line, message, suggestion }`. The model doesn't report severity; it comes from the rule (D10).
 
