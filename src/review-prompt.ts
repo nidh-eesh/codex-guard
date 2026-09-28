@@ -1,16 +1,33 @@
 import type { JSONSchema7 } from "ai";
+import { MODEL } from "./model-config";
 import type { ActiveRule } from "./rules";
 import type { Chunk } from "./review-types";
 
-export const MAX_FINDINGS_PER_CHUNK = 25;
+/**
+ * Output tokens budgeted per finding: about twice the 46-55 measured with
+ * llama-3.3 (`npm run eval:findings-cap`). Remeasure after changing the
+ * review prompt or model.
+ */
+export const OUTPUT_TOKENS_PER_FINDING = 120;
 
-/** The answer's shape, sent as the JSON mode schema. */
+/**
+ * An instruction to the model, not a validation rule: every valid finding is
+ * kept, even past the cap. A chunk whose answer reaches the cap can't pass.
+ * Sized so a full answer fits in max_tokens.
+ */
+export const MAX_FINDINGS_PER_CHUNK = Math.floor(
+  MODEL.maxOutputTokens / OUTPUT_TOKENS_PER_FINDING
+);
+
+/**
+ * The answer's shape, sent as the JSON mode schema. No `maxItems`: a longer
+ * answer must not fail JSON mode and leave the chunk unreviewed.
+ */
 export const REVIEW_RESPONSE_SCHEMA: JSONSchema7 = {
   type: "object",
   properties: {
     findings: {
       type: "array",
-      maxItems: MAX_FINDINGS_PER_CHUNK,
       items: {
         type: "object",
         properties: {

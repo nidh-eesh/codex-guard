@@ -3,6 +3,7 @@ import { splitDiff } from "./diff-split";
 import { validateFindings } from "./finding-validation";
 import { combineReview } from "./review-combine";
 import { reviewChunk } from "./review-model";
+import { MAX_FINDINGS_PER_CHUNK } from "./review-prompt";
 import { redactReview } from "./review-summary";
 import type { Chunk, ChunkOutcome, ReviewResult } from "./review-types";
 import type { ActiveRule } from "./rules";
@@ -28,6 +29,7 @@ export async function reviewAndValidate(
   return {
     reviewed: true,
     usage,
+    atCap: raw.length >= MAX_FINDINGS_PER_CHUNK,
     ...validated,
     // Redacted before the step returns, so Workflows never stores a key
     findings: validated.findings.map((finding) => ({

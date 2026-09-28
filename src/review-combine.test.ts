@@ -36,12 +36,14 @@ const finding = (
 
 const reviewed = (
   findings: ModelFinding[] = [],
-  droppedForErrorRules = 0
+  droppedForErrorRules = 0,
+  atCap = false
 ): ChunkOutcome => ({
   reviewed: true,
   findings,
   dropped: droppedForErrorRules,
   droppedForErrorRules,
+  atCap,
   usage: { inputTokens: 100, outputTokens: 10 }
 });
 
@@ -104,6 +106,42 @@ describe("combineReview verdict", () => {
     expect(result.notes).toContain(
       "Review incomplete: 1 of 2 chunks couldn't be reviewed."
     );
+  });
+});
+
+describe("combineReview at the findings cap", () => {
+  const warnings = Array.from({ length: 3 }, (_, i) =>
+    finding("no-console-log", "src/a.ts", i + 1)
+  );
+
+  it("is incomplete, not pass, when a chunk reached the cap with only warnings", () => {
+    const result = combine([reviewed(warnings, 0, true), reviewed()]);
+    expect(result.verdict).toBe("incomplete");
+    expect(result.notes).toEqual([
+      "Too many findings in one part of the diff to be sure no error was missed. Fix these and review again."
+    ]);
+  });
+
+  it("keeps every finding from a chunk at the cap", () => {
+    expect(combine([reviewed(warnings, 0, true)]).findings).toHaveLength(3);
+  });
+
+  it("still fails when a chunk at the cap has an error finding", () => {
+    const result = combine([
+      reviewed([...warnings, finding("validate-input")], 0, true)
+    ]);
+    expect(result.verdict).toBe("fail");
+    expect(result.notes).toContain(
+      "Too many findings in one part of the diff to be sure no error was missed. Fix these and review again."
+    );
+  });
+
+  it("adds the note once, however many chunks reached the cap", () => {
+    const result = combine([
+      reviewed(warnings, 0, true),
+      reviewed(warnings, 0, true)
+    ]);
+    expect(result.notes).toHaveLength(1);
   });
 });
 

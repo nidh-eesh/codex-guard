@@ -62,7 +62,15 @@ export interface TokenUsage {
 }
 
 export type ChunkOutcome =
-  | ({ reviewed: true; usage: TokenUsage } & ValidatedFindings)
+  | ({
+      reviewed: true;
+      usage: TokenUsage;
+      /**
+       * The model returned at least MAX_FINDINGS_PER_CHUNK findings, valid or
+       * not, so it may have left violations out.
+       */
+      atCap: boolean;
+    } & ValidatedFindings)
   /** The chunk still failed after its retries. */
   | { reviewed: false };
 

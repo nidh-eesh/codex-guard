@@ -1,6 +1,7 @@
 import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it } from "vitest";
 import { runReview, type RunStep } from "./review-pipeline";
+import { MAX_FINDINGS_PER_CHUNK } from "./review-prompt";
 import type { ActiveRule } from "./rules";
 
 const RULES: ActiveRule[] = [
@@ -59,11 +60,50 @@ function steps() {
   return { run, names };
 }
 
+const lines = (n: number) =>
+  Array.from({ length: n }, (_, i) => warning(i + 1));
+
 describe("runReview", () => {
   it("names its steps split, review chunk N, combine", async () => {
     const { run, names } = steps();
     await runReview(DIFF, RULES, answering([]), run);
     expect(names).toEqual(["split", "review chunk 1", "combine"]);
+  });
+
+  it("passes when the answer stays under the findings cap", async () => {
+    const result = await runReview(
+      DIFF,
+      RULES,
+      answering(lines(MAX_FINDINGS_PER_CHUNK - 1)),
+      steps().run
+    );
+    expect(result.verdict).toBe("pass");
+  });
+
+  it("is incomplete when the answer reaches the cap with only warnings", async () => {
+    const result = await runReview(
+      DIFF,
+      RULES,
+      answering(lines(MAX_FINDINGS_PER_CHUNK)),
+      steps().run
+    );
+    expect(result.verdict).toBe("incomplete");
+  });
+
+  it("keeps every valid finding past the cap", async () => {
+    const result = await runReview(
+      DIFF,
+      RULES,
+      answering(lines(MAX_FINDINGS_PER_CHUNK + 3)),
+      steps().run
+    );
+    expect(result.findings).toHaveLength(MAX_FINDINGS_PER_CHUNK + 3);
+  });
+
+  it("counts invalid findings toward the cap", async () => {
+    const answer = [...lines(MAX_FINDINGS_PER_CHUNK - 1), { ruleId: 42 }];
+    const result = await runReview(DIFF, RULES, answering(answer), steps().run);
+    expect(result.verdict).toBe("incomplete");
   });
 
   it("records a chunk whose step keeps failing as not reviewed", async () => {

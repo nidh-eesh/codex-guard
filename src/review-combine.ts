@@ -11,6 +11,9 @@ import type {
 export const UNFINISHED_REVIEW_MESSAGE =
   "Review incomplete: the review couldn't be finished. Try again.";
 
+export const TOO_MANY_FINDINGS_MESSAGE =
+  "Too many findings in one part of the diff to be sure no error was missed. Fix these and review again.";
+
 export interface CombineInput {
   outcomes: readonly ChunkOutcome[];
   /** From the deterministic no-secrets check (D11). */
@@ -53,12 +56,14 @@ export function combineReview({
   for (const finding of secretFindings) add(finding, "secrets-check");
 
   let failed = 0;
+  let atCap = 0;
   let droppedForErrorRules = 0;
   for (const outcome of outcomes) {
     if (!outcome.reviewed) {
       failed++;
       continue;
     }
+    if (outcome.atCap) atCap++;
     droppedForErrorRules += outcome.droppedForErrorRules;
     for (const finding of outcome.findings) add(finding, "model");
   }
@@ -70,9 +75,10 @@ export function combineReview({
       a.line - b.line
   );
 
+  // A chunk at the findings cap may have left an error out, so it can't pass
   const verdict: Verdict = findings.some((f) => f.severity === "error")
     ? "fail"
-    : failed > 0 || droppedForErrorRules > 0
+    : failed > 0 || droppedForErrorRules > 0 || atCap > 0
       ? "incomplete"
       : "pass";
 
@@ -92,6 +98,7 @@ export function combineReview({
       `Review incomplete: ${droppedForErrorRules} findings for error rules failed validation.`
     );
   }
+  if (atCap > 0) notes.push(TOO_MANY_FINDINGS_MESSAGE);
 
   return {
     verdict,

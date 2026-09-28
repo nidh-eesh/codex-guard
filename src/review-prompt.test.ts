@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { MODEL } from "./model-config";
 import {
   buildReviewPrompt,
+  MAX_FINDINGS_PER_CHUNK,
   newMarkerTag,
+  OUTPUT_TOKENS_PER_FINDING,
+  REVIEW_RESPONSE_SCHEMA,
   REVIEW_SYSTEM_PROMPT
 } from "./review-prompt";
 import type { ActiveRule } from "./rules";
@@ -90,6 +94,25 @@ describe("newMarkerTag", () => {
     const b = newMarkerTag();
     expect(a).toMatch(/^[0-9a-f]{16}$/);
     expect(a).not.toBe(b);
+  });
+});
+
+describe("MAX_FINDINGS_PER_CHUNK", () => {
+  it("is 25 with the current model config", () => {
+    expect(MAX_FINDINGS_PER_CHUNK).toBe(25);
+  });
+
+  it("leaves room for a full answer within max_tokens", () => {
+    expect(
+      MAX_FINDINGS_PER_CHUNK * OUTPUT_TOKENS_PER_FINDING
+    ).toBeLessThanOrEqual(MODEL.maxOutputTokens);
+  });
+});
+
+describe("REVIEW_RESPONSE_SCHEMA", () => {
+  it("doesn't cap the findings list, so a longer answer isn't refused", () => {
+    const findings = REVIEW_RESPONSE_SCHEMA.properties?.findings;
+    expect(findings).not.toHaveProperty("maxItems");
   });
 });
 
