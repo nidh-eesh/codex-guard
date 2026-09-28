@@ -1,0 +1,15 @@
+[
+  {
+    "file": "clean.diff",
+    "verdict": "pass"
+  },
+  {
+    "file": "warnings-only.diff",
+    "verdict": "pass"
+  },
+  {
+    "file": "key-and-sql.diff",
+    "verdict": "fail",
+    "mustFind": ["no-secrets", "sql-parameterized"]
+  }
+]

@@ -1,0 +1,12 @@
+diff --git a/src/money.ts b/src/money.ts
+--- a/src/money.ts
++++ b/src/money.ts
+@@ -1,3 +1,8 @@
+ export function add(a: number, b: number): number {
+   return a + b;
+ }
++
++/** Rounds an amount to the nearest cent. */
++export function roundCents(amount: number): number {
++  return Math.round(amount * 100) / 100;
++}

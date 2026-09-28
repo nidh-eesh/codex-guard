@@ -1,0 +1,15 @@
+diff --git a/src/db/users.ts b/src/db/users.ts
+--- a/src/db/users.ts
++++ b/src/db/users.ts
+@@ -1,5 +1,11 @@
+ import { db } from "./client";
+ 
++const AWS_ACCESS_KEY_ID = "{{FAKE_AWS_KEY}}";
++
+ export async function findUser(id: string) {
+   return db.query("SELECT * FROM users WHERE id = ?", [id]);
+ }
++
++export async function findUserByEmail(email: string) {
++  return db.query(`SELECT * FROM users WHERE email = '${email}'`);
++}

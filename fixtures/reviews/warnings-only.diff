@@ -1,0 +1,16 @@
+diff --git a/scripts/clean-tmp.ts b/scripts/clean-tmp.ts
+new file mode 100644
+--- /dev/null
++++ b/scripts/clean-tmp.ts
+@@ -0,0 +1,11 @@
++import { readdirSync, unlinkSync } from "node:fs";
++import { join } from "node:path";
++
++const dir = join(import.meta.dirname, "..", "tmp");
++for (const name of readdirSync(dir)) {
++  try {
++    unlinkSync(join(dir, name));
++  } catch {}
++}
++console.log("Removed temporary files");
++

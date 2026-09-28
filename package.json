@@ -18,7 +18,9 @@
     "format": "oxfmt --write .",
     "lint": "oxlint src/",
     "check": "oxfmt --check . && oxlint src/ && tsc",
-    "test": "vitest run"
+    "test": "vitest run",
+    "eval": "vitest run --config vitest.eval.config.ts review",
+    "eval:findings-cap": "vitest run --config vitest.eval.config.ts findings-cap"
   },
   "dependencies": {
     "@cloudflare/ai-chat": "^0.9.3",
