@@ -19,7 +19,7 @@ A guardrail agent for engineering teams, built on Cloudflare. Each workspace sta
 - The browser lowercases the UUID, and the server accepts only the lowercase form: the router hooks (`onBeforeConnect`, `onBeforeRequest`) validate it before it is used as an instance name and answer anything else with HTTP 400. The hooks can't lowercase it themselves, because the SDK reads the instance name from the URL before they run (D15). The browser runs the same check and shows the §5 message, because it can't read the status of a failed WebSocket handshake.
 - No "does it exist?" check: a random UUID has 122 random bits, so collisions are not a practical concern, and addressing an instance by name creates it.
 - **The link is the credential:** responses send `Referrer-Policy: no-referrer`, and request paths and workspace IDs are never logged. Workers observability is off, because invocation logs record request URLs and the SDK's error logs include instance names (D16).
-- **Cost limits:** a per-IP rate limit on review submissions and chat turns, and a global daily budget of estimated neurons for reviews (D12).
+- **Cost limits:** a per-IP rate limit of 3 review submissions and 10 chat turns a minute (IPv6 keyed by its /64; D23), and a global daily budget of estimated neurons for reviews (D12).
 - **Known limits:** anyone with the link has full access (no authentication), a leaked link can't be rotated, and there is no rate limit on creating workspaces. See §8.
 
 ## 3. Rules
@@ -97,14 +97,14 @@ Messages are exact strings, including the backticks.
 
 ## 6. Review workflow
 
-1. **Submit:** the diff is pasted into the review box, which calls the agent directly (a callable method), never the chat model (D8). The agent checks the per-IP limit and reserves the review's worst-case cost against the daily budget (D12).
+1. **Submit:** the diff is pasted into the review box, which calls the agent directly (a callable method), never the chat model (D8). The agent checks the per-IP limit (D23) and reserves the review's worst-case cost against the daily budget (D12).
 2. **Validate** the diff (§5).
 3. **Start** `ReviewWorkflow` with `runWorkflow`, passing the diff and a snapshot of the active rules. The whole review uses that snapshot.
 4. **Split:** skip lockfiles, binary files, and minified or generated files (names like `*.min.*` and `*.map`, or any added line over 1,000 characters), with a note for each; a skipped minified or generated file makes the verdict incomplete (D22); the `no-secrets` regex still runs over them. Prefix each added and context line with its new-file line number (D13); sizes include the prefixes. Split a file larger than one chunk by hunk, and a hunk larger than one chunk into windows of lines. Then pack files and pieces **first-fit**: each goes into the first chunk with room, checking every open chunk, not just the last one. If every file is skipped, nothing is sent to the review model, but the `no-secrets` check still runs: the review fails if it finds a key, is incomplete if any file was skipped as minified or generated (D22), and otherwise passes with the "Nothing to review" note.
 5. **Review** each chunk with the review model (no tools, JSON mode), asking for at most 25 findings (`maxOutputTokens` / 120). The cap is an instruction, not a limit: every valid finding is kept (D21).
 6. **Validate** each finding (§7).
 7. **Combine:** remove duplicates (same `ruleId`, `file` and `line`), look up each finding's severity from its rule, sort by severity, decide the verdict.
-8. **Store** the review in SQLite (`reviews`: `{ id, createdAt, verdict, findings }`) from `onWorkflowComplete`. `id` is the workflow instance ID, so a retried save doesn't store the review twice. Before storing, the `no-secrets` patterns are run over each finding's `message` and `suggestion`, and matches are masked. Post a summary to the chat with `persistMessages`; the chat model sees only each finding's `ruleId`, `file` and `line` and the verdict, with a `file` that isn't a plain path withheld, while `message` and `suggestion` are shown in the UI only (D9). If the workflow itself fails, the review is stored as `incomplete` with the §5 message, so it never reads as a pass. Settle the cost reservation with the `usage` each call returned.
+8. **Store** the review in SQLite (`reviews`: `{ id, createdAt, verdict, findings }`) from `onWorkflowComplete`. `id` is the workflow instance ID, so a retried save doesn't store the review twice. Before storing, the `no-secrets` patterns are run over each finding's `message` and `suggestion`, and matches are masked. Post a summary to the chat with `persistMessages`; the chat model sees only each finding's `ruleId`, `file` and `line` and the verdict, with a `file` that isn't a plain path withheld, while `message` and `suggestion` are shown in the UI only (D9). If the workflow itself fails, the review is stored as `incomplete` with the §5 message, so it never reads as a pass. Settle the cost reservation (D24): each chunk's reported `usage`, plus its failed attempts at their worst case.
 
 **Token budget per call:** the 24k context holds the answer (`max_tokens` = 3k, set explicitly because the Workers AI default is 256), the system prompt (1k reserved), the active rules (4,050 reserved: 50 rules at the longest line) and the chunk. That leaves 15,950 for the chunk; chunks target 12k tokens (half the context window), estimated at 3 characters per token, line-number prefixes included. The same estimator sizes the rules reserve. The 18k two-chunk bound below is 1.5 × the target. The budget is computed from the model config, not hard-coded.
 
@@ -118,7 +118,7 @@ Messages are exact strings, including the backticks.
 
 **Retries:** each step retries at most 2 times with a 2-second delay (the Workflows default is 5 retries starting at 10 seconds). A chunk that still fails is recorded as not reviewed; it doesn't fail the workflow.
 
-**Diff limit, 50 KB:** at ~3 characters per token, 50 KB ≈ 16.7k tokens. First-fit packing into 12k chunks needs at most 2 chunks for diffs up to 18k tokens; only a diff near the limit with line-number prefixes can go above that and need 3. A maximum-size review costs about 1.1k neurons (1.9k in the worst case), which fits the Free plan's daily allocation. 200 KB is future work (D6).
+**Diff limit, 50 KB:** at ~3 characters per token, 50 KB ≈ 16.7k tokens. First-fit packing into 12k chunks needs at most 2 chunks for diffs up to 18k tokens; only a diff near the limit with line-number prefixes can go above that and need 3. A maximum-size review costs about 1.1k neurons, and reserves at most about 3.2k: three full chunks with 50 rules at the longest line (D24). That fits the daily budget. 200 KB is future work (D6).
 
 ## 7. Trust boundary
 
@@ -132,6 +132,7 @@ Messages are exact strings, including the backticks.
 4. **Approval on rule-changing chat tools.** A human confirms before the chat model changes any rule.
 5. **A deterministic check for `no-secrets`.** A regex pass over added lines, including those in skipped files, reports common key formats as `no-secrets` findings that no prompt can argue away (D11). `sql-parameterized` has no such check: for it, "locked" guarantees the rule stays on, not that every violation is caught.
 6. **State is written only by the server.** Browsers receive agent `state` but can't write it (`validateStateChange` rejects writes from connections), and the review reads rules only from SQLite, through the snapshot passed to the workflow.
+7. **Only the chat agent is routable.** `/agents/*` reaches `ChatAgent` alone; the daily budget is a plain Durable Object reached only by RPC from the agent, and any other class gets a 404 (D25).
 
 **Known limit: raw diffs in Workflows storage.** The diff is passed to `ReviewWorkflow` as an instance parameter, and Workflows keeps instance parameters for the account's retention period; `runWorkflow` can't shorten it. A diff containing a secret is therefore kept there in full: findings are redacted before they are stored (§6 step 8), but the raw input is not.
 

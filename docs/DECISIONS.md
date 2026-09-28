@@ -178,3 +178,27 @@ One entry per design decision: what was decided, the options, and why. Newest la
 - **Decision:** (c).
 - **Why:** (a) lets anyone hide code from the guardrail by padding a line, and a silent pass is the worst outcome for a guardrail (D10). (b) breaks the token estimate the chunk budget depends on (D6), and the model can't reliably review minified code. (c) fails closed: the file isn't reviewed, and the verdict says so.
 - **Consequences:** A diff with such a file can't pass. It is incomplete, or fails on an error finding elsewhere, including a `no-secrets` hit in the skipped file itself. Each file gets the note "Review incomplete: `{file}` was skipped as minified or generated and could hide code that breaks the rules." Lockfiles and binary files are still skipped with the plain note and don't block a pass; supply-chain review of them is out of scope (§8).
+
+## D23 - Per-IP rate limits: the numbers and the key
+
+- **Context:** D12 chose per-IP limits on review submissions and chat turns, but not the numbers, the key, or where the IP is read. Chat messages and callables arrive over a WebSocket, and its messages carry no headers.
+- **Options:** for the key, (a) the full IP address; (b) the IPv4 address, or the /64 of an IPv6 address.
+- **Decision:** 3 review submissions and 10 chat turns per 60 seconds per key. The key is (b); an IPv4-mapped IPv6 address counts as its IPv4 address. The IP comes from `CF-Connecting-IP` on the WebSocket upgrade: it is read once in `onConnect`, kept in the connection's state, and never logged. Every chat turn from a browser counts, including approval continuations. A turn resumed after an eviction has no connection and was already counted.
+- **Why:** An IPv6 client usually controls a whole /64 and can switch addresses within it freely, so a full-address key limits nothing. The upgrade request is the only request with headers, so a client can't pick a new key for each message.
+- **Consequences:** Clients behind one NAT share a limit. The limit is checked before the diff is validated, so a rejected diff still uses a slot. The binding counts per location and is approximate (D12). With no header, every client shares the key `unknown`; Cloudflare always sets the header, so this shouldn't happen in production.
+
+## D24 - A review reserves one attempt per chunk, and retries are charged when it settles
+
+- **Context:** D12 reserves "input tokens plus `max_tokens` for every chunk". Each chunk step is retried up to 2 times (D10), and a failed attempt's usage is never reported. Reserving the retries too, the largest review (three full chunks, 50 rules at the longest line) needs about 9.6k neurons, more than the 8,000 budget.
+- **Options:** (a) reserve the retries too; (b) reserve one attempt per chunk and charge retries when settling; (c) reserve again before each retry.
+- **Decision:** (b). A reviewed chunk is charged its reported usage plus each failed attempt at its worst case; a chunk that was never reviewed, 3 × its worst case; a workflow error, the full reservation; a workflow that never started, 0. The agent stores each reservation's UTC day, so a review started just before midnight settles against that day. Reserve and settle are both idempotent by review ID.
+- **Why:** (a) refuses the largest valid diffs outright. (c) puts a budget call inside a retried step, so a refused retry would leave a chunk unreviewed for a reason other than failure. Retries are rare.
+- **Consequences:** The day's spend can go over 8,000, by up to 2 × the reservation of each review that retries. The 2,000-neuron margin covers normal use, but not the worst case. Beyond the Free plan's 10,000, Workers AI refuses calls and reviews come back incomplete, so it fails closed. The largest review reserves about 3.2k, so two can run at once.
+
+## D25 - Only the chat agent is routable
+
+- **Context:** `routeAgentRequest` routes `/agents/{namespace}/{name}` to any Durable Object binding, not only Agents. The daily budget is a plain Durable Object (D12), so `/agents/neuron-budget/{date}` would otherwise reach it.
+- **Options:** (a) refuse the budget's class by name; (b) allow only `ChatAgent`.
+- **Decision:** (b). Both route hooks (`onBeforeConnect` and `onBeforeRequest`) refuse every class other than `ChatAgent` with a 404, before the workspace ID check. `NeuronBudget` has no fetch handler and is reached only by RPC from the agent.
+- **Why:** An allow-list means a Durable Object added later isn't exposed by default.
+- **Consequences:** A new routable agent has to be added to the guard.

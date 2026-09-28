@@ -234,3 +234,16 @@ Then start step5, cost controls:
 2. the daily neuron budget as a plain DurableObject keyed by UTC date, not an Agent, with a test that /agents/* can't reach it,
 3. reserve the worst case before a review and settle it with the real usage after.
 ````
+
+### 2026-09-28 18:14 UTC
+
+````text
+D23, D24, D25 and the design #6 fix are approved. Write them and commit as you proposed. On the 15:01 failure: I think it's the binding's fixed 60-second window, with the two turns falling in different windows. Confirm from the docs and add that sentence to D23. 
+
+Chat budget: count each turn's reported usage after it finishes, against a separate 2,000 daily cap in the same budget DO, and refuse new turns once it's reached. Also send only the last 10 messages to the chat model. First measure neurons per turn with a short and a long history, and put the numbers in a D26 draft.
+
+Refused chat messages: don't keep them in the history; show the refusal in the UI only. If that isn't simple in the SDK, tell me and we'll list it in design 8.
+No vitest-pool-workers. Instead, in step 6, add a post-deploy smoke script that curls the live URL and expects 404 from /agents/neuron-budget/x, 400 for an uppercase workspace ID, and the Referrer-Policy header on the page.
+
+Stop after that with commit messages. Then step 6: README and deploy.
+````
