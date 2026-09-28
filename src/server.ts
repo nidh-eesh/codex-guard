@@ -11,7 +11,7 @@ import {
 } from "ai";
 import { MODEL } from "./model-config";
 import { withReferrerPolicy } from "./http";
-import { rejectInvalidWorkspace } from "./workspace";
+import { rejectAgentRoute } from "./workspace";
 import type { ResolvedRules } from "./rules";
 import { readRules } from "./rule-changes";
 import { NO_RULES, rejectBrowserStateWrites } from "./rule-state";
@@ -149,17 +149,20 @@ export class ChatAgent extends AIChatAgent<Env, ResolvedRules> {
   }
 }
 
-// The instance name is the workspace ID. Hooks run before the Durable Object
-// is reached, for WebSocket upgrades and plain HTTP requests alike.
-const checkWorkspace = (_request: Request, lobby: { name: string }) =>
-  rejectInvalidWorkspace(lobby.name);
+// Hooks run before the Durable Object is reached, for WebSocket upgrades and
+// plain HTTP requests alike: only the chat agent, and only under a workspace
+// ID. The neuron budget is never routable.
+const checkRoute = (
+  _request: Request,
+  lobby: { className: string; name: string }
+) => rejectAgentRoute(lobby);
 
 export default {
   async fetch(request: Request, env: Env) {
     const response =
       (await routeAgentRequest(request, env, {
-        onBeforeConnect: checkWorkspace,
-        onBeforeRequest: checkWorkspace
+        onBeforeConnect: checkRoute,
+        onBeforeRequest: checkRoute
       })) ?? new Response("Not found", { status: 404 });
     return withReferrerPolicy(response);
   }

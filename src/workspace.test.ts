@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   INVALID_WORKSPACE_MESSAGE,
   isWorkspaceId,
+  rejectAgentRoute,
   rejectInvalidWorkspace,
   resolveWorkspace
 } from "./workspace";
@@ -43,6 +44,39 @@ describe("isWorkspaceId", () => {
     ["path traversal", "../../etc/passwd"]
   ])("rejects %s", (_case, value) => {
     expect(isWorkspaceId(value)).toBe(false);
+  });
+});
+
+describe("rejectAgentRoute", () => {
+  it("lets the chat agent through under a workspace ID", () => {
+    expect(
+      rejectAgentRoute({ className: "ChatAgent", name: ID })
+    ).toBeUndefined();
+  });
+
+  it.each([
+    ["under today's date", "2026-09-28"],
+    ["under a valid workspace ID", ID]
+  ])(
+    "refuses the neuron budget %s: /agents/* can't reach it",
+    async (_case, name) => {
+      const response = rejectAgentRoute({ className: "NEURON_BUDGET", name });
+      expect(response?.status).toBe(404);
+    }
+  );
+
+  it.each(["REVIEW_WORKFLOW", "AI", "chatagent", ""])(
+    "refuses any other binding, like %j",
+    (className) => {
+      expect(rejectAgentRoute({ className, name: ID })?.status).toBe(404);
+    }
+  );
+
+  it("still refuses an invalid workspace ID for the chat agent", () => {
+    expect(
+      rejectAgentRoute({ className: "ChatAgent", name: ID.toUpperCase() })
+        ?.status
+    ).toBe(400);
   });
 });
 

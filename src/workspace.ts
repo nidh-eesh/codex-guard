@@ -24,6 +24,25 @@ export function rejectInvalidWorkspace(name: string): Response | undefined {
   return new Response(INVALID_WORKSPACE_MESSAGE, { status: 400 });
 }
 
+/** The Durable Object binding that /agents/* may reach. */
+export const ROUTABLE_AGENT = "ChatAgent";
+
+/**
+ * The router hooks' check. routeAgentRequest routes /agents/{namespace}/...
+ * to any Durable Object binding in env, so every namespace but the chat
+ * agent's is refused, the neuron budget included. Then the instance name
+ * must be a workspace ID.
+ */
+export function rejectAgentRoute(lobby: {
+  className: string;
+  name: string;
+}): Response | undefined {
+  if (lobby.className !== ROUTABLE_AGENT) {
+    return new Response("Not found", { status: 404 });
+  }
+  return rejectInvalidWorkspace(lobby.name);
+}
+
 export type WorkspaceRoute =
   | { kind: "open"; id: string; path: string }
   | { kind: "invalid" };
