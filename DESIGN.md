@@ -70,38 +70,40 @@ The chat model is called without token streaming: the provider doubles streamed 
 
 Messages are exact strings, including the backticks.
 
-| Case                                                                              | Message                                                                               |
-| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| Rule text empty, or outside 10–200 characters                                     | "Rule text must be between 10 and 200 characters."                                    |
-| Duplicate rule                                                                    | "A rule with this text already exists."                                               |
-| Adding or restoring a 51st rule                                                   | "This workspace has 50 rules, the maximum. Remove one first."                         |
-| Unknown rule ID                                                                   | "No rule with ID `{ruleId}` exists in this workspace."                                |
-| Removing or switching off a locked rule                                           | "Rule `{ruleId}` is locked and can't be switched off."                                |
-| Switching off a recommended rule without a reason                                 | "A reason is required to switch off a recommended rule."                              |
-| A reason over 200 characters                                                      | "The reason must be at most 200 characters."                                          |
-| Switching off a rule that is already switched off                                 | "Rule `{ruleId}` is already switched off."                                            |
-| Restoring a rule that isn't switched off                                          | "Rule `{ruleId}` is not switched off."                                                |
-| Empty diff                                                                        | "The diff is empty. Paste a unified diff to review."                                  |
-| Not a unified diff (no `@@` hunk header)                                          | "This doesn't look like a unified diff. Paste the output of `git diff`."              |
-| A file was skipped; `{reason}` is `lockfile`, `binary` or `minified or generated` | "Skipped `{file}` ({reason})."                                                        |
-| Every file in the diff was skipped                                                | "Nothing to review: every file in the diff was skipped."                              |
-| Diff over 50 KB (`MAX_DIFF_BYTES = 50_000`)                                       | "The diff is larger than 50 KB. Split it into smaller reviews."                       |
-| Per-IP rate limit reached                                                         | "Too many requests. Try again in a minute."                                           |
-| Daily review budget used up                                                       | "The daily review limit has been reached. Try again tomorrow."                        |
-| A chunk failed after its retries                                                  | "Review incomplete: {n} of {total} chunks couldn't be reviewed."                      |
-| A finding for an error-severity rule failed validation                            | "Review incomplete: {m} findings for error rules failed validation."                  |
-| Invalid workspace ID                                                              | "This workspace link is invalid." (shown by the browser; the server answers HTTP 400) |
+| Case                                                                              | Message                                                                                                 |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Rule text empty, or outside 10–200 characters                                     | "Rule text must be between 10 and 200 characters."                                                      |
+| Duplicate rule                                                                    | "A rule with this text already exists."                                                                 |
+| Adding or restoring a 51st rule                                                   | "This workspace has 50 rules, the maximum. Remove one first."                                           |
+| Unknown rule ID                                                                   | "No rule with ID `{ruleId}` exists in this workspace."                                                  |
+| Removing or switching off a locked rule                                           | "Rule `{ruleId}` is locked and can't be switched off."                                                  |
+| Switching off a recommended rule without a reason                                 | "A reason is required to switch off a recommended rule."                                                |
+| A reason over 200 characters                                                      | "The reason must be at most 200 characters."                                                            |
+| Switching off a rule that is already switched off                                 | "Rule `{ruleId}` is already switched off."                                                              |
+| Restoring a rule that isn't switched off                                          | "Rule `{ruleId}` is not switched off."                                                                  |
+| Empty diff                                                                        | "The diff is empty. Paste a unified diff to review."                                                    |
+| Not a unified diff (no `@@` hunk header)                                          | "This doesn't look like a unified diff. Paste the output of `git diff`."                                |
+| A file was skipped; `{reason}` is `lockfile`, `binary` or `minified or generated` | "Skipped `{file}` ({reason})."                                                                          |
+| Every file in the diff was skipped                                                | "Nothing to review: every file in the diff was skipped."                                                |
+| Diff over 50 KB (`MAX_DIFF_BYTES = 50_000`)                                       | "The diff is larger than 50 KB. Split it into smaller reviews."                                         |
+| Per-IP rate limit reached                                                         | "Too many requests. Try again in a minute."                                                             |
+| Daily review budget used up                                                       | "The daily review limit has been reached. Try again tomorrow."                                          |
+| A chunk failed after its retries                                                  | "Review incomplete: {n} of {total} chunks couldn't be reviewed."                                        |
+| A finding for an error-severity rule failed validation                            | "Review incomplete: {m} findings for error rules failed validation."                                    |
+| A chunk's answer reached the findings cap                                         | "Too many findings in one part of the diff to be sure no error was missed. Fix these and review again." |
+| The review workflow itself failed                                                 | "Review incomplete: the review couldn't be finished. Try again."                                        |
+| Invalid workspace ID                                                              | "This workspace link is invalid." (shown by the browser; the server answers HTTP 400)                   |
 
 ## 6. Review workflow
 
 1. **Submit:** the diff is pasted into the review box, which calls the agent directly (a callable method), never the chat model (D8). The agent checks the per-IP limit and reserves the review's worst-case cost against the daily budget (D12).
 2. **Validate** the diff (§5).
 3. **Start** `ReviewWorkflow` with `runWorkflow`, passing the diff and a snapshot of the active rules. The whole review uses that snapshot.
-4. **Split:** skip lockfiles, binary files, and minified or generated files (names like `*.min.*` and `*.map`, or any added line over 1,000 characters), with a note for each; the `no-secrets` regex still runs over them. Prefix each added and context line with its new-file line number (D13); sizes include the prefixes. Split a file larger than one chunk by hunk, and a hunk larger than one chunk into windows of lines. Then pack files and pieces **first-fit**: each goes into the first chunk with room, checking every open chunk, not just the last one.
-5. **Review** each chunk with the review model (no tools, JSON mode), producing at most 25 findings.
+4. **Split:** skip lockfiles, binary files, and minified or generated files (names like `*.min.*` and `*.map`, or any added line over 1,000 characters), with a note for each; the `no-secrets` regex still runs over them. Prefix each added and context line with its new-file line number (D13); sizes include the prefixes. Split a file larger than one chunk by hunk, and a hunk larger than one chunk into windows of lines. Then pack files and pieces **first-fit**: each goes into the first chunk with room, checking every open chunk, not just the last one. If every file is skipped, nothing is sent to the review model, but the `no-secrets` check still runs: the review passes with the "Nothing to review" note unless the check finds a key, which fails it.
+5. **Review** each chunk with the review model (no tools, JSON mode), asking for at most 25 findings (`maxOutputTokens` / 120). The cap is an instruction, not a limit: every valid finding is kept (D21).
 6. **Validate** each finding (§7).
 7. **Combine:** remove duplicates (same `ruleId`, `file` and `line`), look up each finding's severity from its rule, sort by severity, decide the verdict.
-8. **Store** the review in SQLite (`reviews`: `{ id, createdAt, verdict, findings }`) from `onWorkflowComplete`. `id` is the workflow instance ID, so a retried save doesn't store the review twice. Before storing, the `no-secrets` patterns are run over each finding's `message` and `suggestion`, and matches are masked. Post a summary to the chat with `persistMessages`; the chat model sees only each finding's `ruleId`, `file` and `line` and the verdict, while `message` and `suggestion` are shown in the UI only (D9). Settle the cost reservation with the `usage` each call returned.
+8. **Store** the review in SQLite (`reviews`: `{ id, createdAt, verdict, findings }`) from `onWorkflowComplete`. `id` is the workflow instance ID, so a retried save doesn't store the review twice. Before storing, the `no-secrets` patterns are run over each finding's `message` and `suggestion`, and matches are masked. Post a summary to the chat with `persistMessages`; the chat model sees only each finding's `ruleId`, `file` and `line` and the verdict, with a `file` that isn't a plain path withheld, while `message` and `suggestion` are shown in the UI only (D9). If the workflow itself fails, the review is stored as `incomplete` with the §5 message, so it never reads as a pass. Settle the cost reservation with the `usage` each call returned.
 
 **Token budget per call:** the 24k context holds the answer (`max_tokens` = 3k, set explicitly because the Workers AI default is 256), the system prompt (~1k), the active rules (≤ ~3k) and the chunk. That leaves about 17k for the chunk; chunks target 12k tokens, estimated at 3 characters per token for code, line-number prefixes included. The budget is computed from the model config, not hard-coded.
 
@@ -110,7 +112,7 @@ Messages are exact strings, including the backticks.
 **Verdict:**
 
 - **fail** if any finding that survives validation violates an error-severity rule;
-- otherwise **incomplete** if a chunk failed after its retries or a finding for an error-severity rule was discarded, with both counts shown;
+- otherwise **incomplete** if a chunk failed after its retries, a finding for an error-severity rule was discarded, or a chunk's answer reached the findings cap (D21), with each count shown;
 - otherwise **pass**, listing warnings.
 
 **Retries:** each step retries at most 2 times with a 2-second delay (the Workflows default is 5 retries starting at 10 seconds). A chunk that still fails is recorded as not reviewed; it doesn't fail the workflow.
@@ -123,12 +125,14 @@ Messages are exact strings, including the backticks.
 
 **Untrusted inputs:** the diff, and custom rule text (anyone with the link can add a rule).
 
-1. **The review model has no tools, and diffs never reach the chat model. This is the guarantee.** Diffs go from the review box straight to the workflow (D8), so the only model that sees a diff can't call `addRule`, `removeRule` or `restoreRule`. Review results reach the chat model only as validated fields (`ruleId`, `file`, `line`, verdict), never as free text (D9). A malicious diff can't change the rules.
+1. **The review model has no tools, and diffs never reach the chat model. This is the guarantee.** Diffs go from the review box straight to the workflow (D8), so the only model that sees a diff can't call `addRule`, `removeRule` or `restoreRule`. Review results reach the chat model only as validated fields (`ruleId`, `file`, `line`, verdict), never as free text (D9). File paths come from the diff, so a path that isn't plain is withheld. A malicious diff can't change the rules.
 2. **Untrusted text is treated as data. This is a mitigation.** The diff and the custom rules are wrapped in delimiters, and the system prompt says the content inside is untrusted, must never be followed as instructions, and that locked rules take priority over custom rules. Models can still be tricked. Layer 1 keeps a successful trick away from the rules, but it can still produce a wrong review, and for a guardrail a false pass is exactly what an attacker wants; layers 3 and 5 limit that.
 3. **Output validation.** Zod checks each finding's shape. Further checks confirm that the `ruleId` exists in the rules snapshot, that `file` is one of the chunk's files, and that `line` is one of that file's numbered lines (D13). Findings that fail are dropped and counted; malformed responses are retried by the workflow step. Severity comes from the rule, not the model, and the verdict fails closed: a failed chunk or a discarded error-rule finding makes it `incomplete`, never `pass` (D10).
 4. **Approval on rule-changing chat tools.** A human confirms before the chat model changes any rule.
 5. **A deterministic check for `no-secrets`.** A regex pass over added lines, including those in skipped files, reports common key formats as `no-secrets` findings that no prompt can argue away (D11). `sql-parameterized` has no such check: for it, "locked" guarantees the rule stays on, not that every violation is caught.
 6. **State is written only by the server.** Browsers receive agent `state` but can't write it (`validateStateChange` rejects writes from connections), and the review reads rules only from SQLite, through the snapshot passed to the workflow.
+
+**Known limit: raw diffs in Workflows storage.** The diff is passed to `ReviewWorkflow` as an instance parameter, and Workflows keeps instance parameters for the account's retention period; `runWorkflow` can't shorten it. A diff containing a secret is therefore kept there in full: findings are redacted before they are stored (§6 step 8), but the raw input is not.
 
 ## 8. Out of scope
 

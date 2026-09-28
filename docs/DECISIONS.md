@@ -72,7 +72,7 @@ One entry per design decision: what was decided, the options, and why. Newest la
 - **Options:** (a) post the full summary as a message the model reads; (b) keep reviews out of chat; (c) post with `persistMessages`, which doesn't start a model turn, and show the model only `ruleId`, `file`, `line` and the verdict, with `message` and `suggestion` shown in the UI only.
 - **Decision:** (c).
 - **Why:** (a) lets diff text reach the model with tools second-hand, getting around layer 1. (b) rules out asking the chat "why did this fail?".
-- **Consequences:** The chat model can say which rules failed but can't quote the review's text. The conversion from chat messages to model messages must remove those parts.
+- **Consequences:** The chat model can say which rules failed but can't quote the review's text. The conversion from chat messages to model messages must remove those parts. `file` passes validation but its text comes from the diff, so a path that isn't plain (letters, digits and `._/@+-`, at most 200 characters) is replaced with "(file name withheld)" in what the chat model reads; the UI shows it as written.
 
 ## D10 - The verdict fails closed and uses rule severity
 
@@ -80,7 +80,7 @@ One entry per design decision: what was decided, the options, and why. Newest la
 - **Options:** (a) pass unless a valid error finding survives; (b) retry until everything validates; (c) three verdicts (pass, fail, incomplete), with severity looked up from the rule.
 - **Decision:** (c).
 - **Why:** With (a), invalid output, or a violation labelled "warning", turns into a pass, and a silent pass is the worst outcome for a guardrail. (b) loops forever on a failure that repeats every time.
-- **Consequences:** The verdict is `incomplete` whenever a chunk failed after its retries or a finding for an error-severity rule was discarded, and both counts are shown. `severity` is removed from the model's output schema. Each step retries at most 2 times with a 2-second delay, instead of the Workflows default of 5 retries starting at 10 seconds. If `incomplete` turns out to be common, fix line anchoring (D13) rather than loosening this rule.
+- **Consequences:** The verdict is `incomplete` whenever a chunk failed after its retries, a finding for an error-severity rule was discarded, or a chunk's answer reached the findings cap without an error finding (D21), and each count is shown. `severity` is removed from the model's output schema. Each step retries at most 2 times with a 2-second delay, instead of the Workflows default of 5 retries starting at 10 seconds. If `incomplete` turns out to be common, fix line anchoring (D13) rather than loosening this rule.
 
 ## D11 - Custom rule text is untrusted input to the review
 
@@ -161,3 +161,12 @@ One entry per design decision: what was decided, the options, and why. Newest la
 - **Decision:** (d).
 - **Why:** (c) doesn't fix the bug and forces the AI SDK 7 upgrade. (b) reopens the model decision (§1, D6, D12). (a) adds a dependency and a patch against a built file. (d) is a two-line change using the SDK's own middleware, tested end to end: approval, the change, the state pushed, and the exact §5 message on a refusal.
 - **Consequences:** Chat replies appear all at once instead of token by token, after a wait with nothing on screen. The review model stays on llama-3.3: it is called without streaming (a Workflow step needs the whole answer to validate it), and the provider's non-streaming path reads each field once, so this bug can't reach it. The review call must never stream.
+
+## D21 - The findings cap is an instruction, and reaching it blocks a pass
+
+- **Context:** The review model is told to report at most 25 findings per chunk. There were two concerns. A full answer at 25 might overflow `max_tokens` (3,000), be cut off, and leave the chunk unreviewed after three paid calls. And a model that stops at the cap may have left violations out, errors included.
+- **Measurement:** `npm run eval:findings-cap` (40 `console.log` violations): 46-55 output tokens per finding. 25 findings used 1,156-1,410 tokens, and all 40 used 2,206; none were cut off. The model once returned 26 despite the cap.
+- **Options:** (a) enforce the cap in validation, dropping findings past it; (b) lower the cap; (c) keep the cap as an instruction only: keep every valid finding, and don't let a chunk that reached the cap pass.
+- **Decision:** (c). The cap is `maxOutputTokens` / 120, which is 25, and the JSON schema has no `maxItems`.
+- **Why:** (a) hides real violations, and a schema limit would make JSON mode refuse a longer answer and fail the chunk. (b) addresses an overflow the measurement didn't show. A model that filled its quota may have stopped early, so without an error finding the honest verdict is incomplete (D10).
+- **Consequences:** A chunk whose answer has at least 25 findings, valid or not, adds "Too many findings in one part of the diff to be sure no error was missed. Fix these and review again." Without an error finding the verdict is `incomplete`; with one it fails as usual. Rerun `npm run eval:findings-cap` after changing the review prompt or model.

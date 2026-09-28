@@ -159,3 +159,21 @@ Yes, add D20
 ````text
 Step 3 is done. Start step 4 in two halves. 4a: build the whole review path end to end, with placeholders for my two modules: one chunk for the whole diff, and a validator that only checks the Zod shape. Mark both placeholders clearly. Stay on Llama for the review model. The review model stays on llama-3.3: it is called without streaming (a Workflow step needs the whole answer to validate it), and the provider's non-streaming path reads each field once, so this bug can't reach it. Show findings' message and suggestion as plain text, never markdown. Stop when 4a works end to end. Then for 4b, write the signatures and tests for diff splitting, the token budget and finding validation, and stop for me.
 ````
+
+### 2026-09-27 20:21 UTC
+
+````text
+Before you start 4b a decision on the findings cap: 
+1. Measure first: simulate a file review with about 40 console.log lines and tell me the output tokens per finding.
+2. Then, find a suitable MAX_FINDINGS_PER_CHUNK. At 25, a worst-case answer might overflow max_tokens (3,000), gets cut off, and the chunk ends incomplete after three paid calls. So verify that.
+3. Keep every validated finding even beyond the cap, the cap serves as an instruction to the model and not a validation rule.
+4. When a model returned at least the cap number of findings, if it has no valid error-rule finding verdict should not be pass, should be incomplete with a new message maybe like "Too many findings in one part of the diff to be sure no error was missed. Fix these and review again." If any error finding is present, it's fail as usual.
+5. Propose a D21 entry for this, and update D10 and Design 5. Wait for my OK before writing.
+6. Add three demo diffs as an eval set (clean, warnings only, key plus SQL) under a fixtures folder, with their expected verdicts, so I can rerun them after any prompt change.
+````
+
+### 2026-09-27 20:49 UTC
+
+````text
+Measurement accepted. Keep 25 as maxOutputTokens / 120. Write D21 and the D10, Section 5 and section 6 changes as drafted. The cap note on fail verdicts is fine. Also write the three 4a items: the "couldn't be finished" message, the all-files-skipped behaviour, and withholding unusual file names (update D9 for that one). Then give me commit messages that split the work into: the cap and saturation behaviour, the pipeline refactor, the eval set, and the docs. Then start 4b: signatures and tests only, and stop.
+````
