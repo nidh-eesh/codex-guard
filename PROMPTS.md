@@ -3,7 +3,6 @@
 AI-assisted coding was used on this project, as the assignment allows. This file is the prompt history.
 
 - **Build:** Claude Code in this repo. Every prompt is appended below automatically, verbatim, by a `UserPromptSubmit` hook (`.claude/hooks/log-prompt.sh`).
-- **Notes:** after some entries I add a `> Note:` line recording what I accepted, rejected, or corrected, and why.
 
 ## Build log
 
@@ -327,4 +326,19 @@ Create tests, including a replay of this loop with a mock model, it must stop af
 
 ````text
 A revisal for the approval rule needsApproval returns false, and execute refuses at once, only when the refusal can't depend on workspace state: the target rule is locked (removeRule, restoreRule), or the arguments fail validation (length limits, missing or placeholder reason). Everything that depends on SQLite state (already off, not off, duplicate, 50-rule cap) keeps approval, because it can change between the check and execute. Update the AGENTS.md invariant and draft a decision entry explaining that line.After a step with a tool error, run the next step with no tools (prepareStep, activeTools: []) so the model has to explain the refusal in words and can't retry. Keep stepCountIs(5). Test it with a replay of the "disable all rules" loop and a mock model. Also try to think of a rule bulk removal so that it doesn't require multiple approval and turns for each and a list tool call in between saving neurons
+````
+
+### 2026-09-29 07:38 UTC
+
+````text
+D28 is approved and committed. Next do all of these,
+1. Quoted reasons: a switch-off reason must appear in the user's messages within the model's 10-message window(lowercase, collapsed whitespace, substring match). Otherwise refuse without approval, with a message asking the user for a reason. it depends only on the call and the history. Add the local incident (the invented reason "This rule is not necessary for our project", approved 4 times) to D28's Context, with a test replaying it.
+2. Bulk removal as you proposed: removeRule and restoreRule take ruleIds[] with one shared reason. Apply what it can, report each item, and a result with any refused item gets the no-tools step. Draft D29.
+3. Tests for both, commit messages, then redeploy, and do your read-only check of the live pending card.
+````
+
+### 2026-09-29 08:43 UTC
+
+````text
+D29 is approved. Write it and commit it.
 ````

@@ -7,13 +7,14 @@ import {
 import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
 import {
+  AFTER_REFUSAL_NOTE,
   chatStopWhen,
   explainAfterRefusal,
   lastCallRefused,
   MAX_CHAT_STEPS,
   omitEmptyTools
 } from "./chat-turn";
-import { readRules, ruleChangeRefusal, type RuleTables } from "./rule-changes";
+import { readRules, ruleChangePreview, type RuleTables } from "./rule-changes";
 import { ruleTools, toolErrorText } from "./rule-tools";
 import type { CustomRule, DisabledDefault } from "./rules";
 
@@ -49,10 +50,11 @@ function tablesWithOff(off: readonly string[]): RuleTables {
   };
 }
 
-const REASON = "Switch off every rule the user asked about";
-const LOCKED = { ruleId: "no-secrets", reason: REASON };
-const ALREADY_OFF = { ruleId: "validate-input", reason: REASON };
-const MADE_UP_REASON = { ruleId: "no-console-log", reason: "No reason" };
+// The user gives this reason, so only the rules decide the switch-offs below
+const REASON = "Covered by our own linting";
+const LOCKED = { ruleIds: ["no-secrets"], reason: REASON };
+const ALREADY_OFF = { ruleIds: ["validate-input"], reason: REASON };
+const MADE_UP_REASON = { ruleIds: ["no-console-log"], reason: "No reason" };
 
 const LOCKED_REFUSAL =
   "Rule `no-secrets` is locked and can't be switched off. Locked rules can't be changed; don't try again.";
@@ -73,8 +75,11 @@ const usage = {
  */
 function loopingModel(script: object[]) {
   const offeredTools: boolean[] = [];
+  const systems: string[] = [];
   const model = new MockLanguageModelV3({
-    doGenerate: async ({ tools }) => {
+    doGenerate: async ({ tools, prompt }) => {
+      const system = prompt.find((message) => message.role === "system");
+      systems.push(typeof system?.content === "string" ? system.content : "");
       // Workers AI's own check: an empty list is refused, not ignored
       if (tools?.length === 0) {
         throw new Error("`tools` must not be an empty array");
@@ -105,7 +110,7 @@ function loopingModel(script: object[]) {
       };
     }
   });
-  return { model, offeredTools };
+  return { model, offeredTools, systems };
 }
 
 /** One chat turn, configured as the agent configures it. */
@@ -118,16 +123,17 @@ async function turn(
   const before = readRules(tables);
   const onChange = vi.fn();
   const tools = ruleTools(tables, onChange);
-  const { model, offeredTools } = loopingModel(script);
+  const { model, offeredTools, systems } = loopingModel(script);
   const result = streamText({
     model: wrapLanguageModel({
       model,
       middleware: [simulateStreamingMiddleware(), omitEmptyTools]
     }),
+    system: "System prompt.",
     messages,
     tools,
     stopWhen: chatStopWhen<typeof tools>(),
-    prepareStep: explainAfterRefusal<typeof tools>()
+    prepareStep: explainAfterRefusal<typeof tools>("System prompt.")
   });
   const chunks: { type: string; errorText?: string; delta?: string }[] = [];
   const reader = result
@@ -138,6 +144,7 @@ async function turn(
   }
   return {
     offeredTools,
+    systems,
     toolCalls: chunks.filter((c) => c.type === "tool-input-available").length,
     errors: chunks
       .filter((c) => c.type === "tool-output-error")
@@ -154,7 +161,7 @@ async function turn(
 }
 
 const disableAll: ModelMessage[] = [
-  { role: "user", content: "Disable all rules" }
+  { role: "user", content: `Disable all rules. ${REASON}.` }
 ];
 
 /** The turn after a person answered an approval for `input`. */
@@ -201,6 +208,12 @@ describe("the disable-all loop, replayed (D28)", () => {
     expect(run.answer).toBe("That change was refused.");
     expect(run.rulesAfter).toEqual(run.rulesBefore);
     expect(run.onChange).not.toHaveBeenCalled();
+    // The no-tools step is told why, so it explains instead of writing out
+    // a tool call
+    expect(run.systems).toEqual([
+      "System prompt.",
+      `System prompt.\n\n${AFTER_REFUSAL_NOTE}`
+    ]);
   });
 
   it("asks a person before the change that depends on the rules, and the card warns it will be refused", async () => {
@@ -208,9 +221,12 @@ describe("the disable-all loop, replayed (D28)", () => {
     expect(run.offeredTools).toEqual([true]);
     expect(run.askedForApproval).toBe(true);
     expect(run.errors).toEqual([]);
-    expect(ruleChangeRefusal("removeRule", ALREADY_OFF, run.rulesBefore)).toBe(
-      "Rule `validate-input` is already switched off."
-    );
+    expect(
+      ruleChangePreview("removeRule", ALREADY_OFF, run.rulesBefore)
+    ).toEqual({
+      refusals: ["Rule `validate-input` is already switched off."],
+      allRefused: true
+    });
   });
 
   it("after an approved call is refused, gives the model no tools for its next step", async () => {
@@ -238,13 +254,63 @@ describe("the disable-all loop, replayed (D28)", () => {
   });
 
   it("refuses a made-up reason without asking, then makes the model explain", async () => {
-    const run = await turn(disableAll, [MADE_UP_REASON], []);
+    const run = await turn(
+      [{ role: "user", content: "Disable all rules. No reason." }],
+      [MADE_UP_REASON],
+      []
+    );
     expect(run.offeredTools).toEqual([true, false]);
     expect(run.askedForApproval).toBe(false);
     expect(run.errors).toEqual([
       "The reason must say why the team is switching this rule off, in at least 10 characters."
     ]);
     expect(run.rulesAfter).toEqual(run.rulesBefore);
+  });
+
+  it("refuses the local incident's invented reason without asking (D28)", async () => {
+    // Asked to disable all rules with no reason given, the model made one up,
+    // and a person approved it 4 times. Now no approval is asked for.
+    const invented = {
+      ruleIds: UNLOCKED,
+      reason: "This rule is not necessary for our project"
+    };
+    const run = await turn(
+      [{ role: "user", content: "Disable all rules" }],
+      [invented],
+      []
+    );
+    expect(run.offeredTools).toEqual([true, false]);
+    expect(run.askedForApproval).toBe(false);
+    expect(run.errors).toHaveLength(1);
+    expect(run.errors[0]).toContain(
+      "The reason must be in the user's own words"
+    );
+    expect(run.rulesAfter).toEqual(run.rulesBefore);
+  });
+
+  it("switches off every unlocked rule with one approval, then explains the locked ones (D29)", async () => {
+    const everyRule = {
+      ruleIds: [...UNLOCKED, "no-secrets", "sql-parameterized"],
+      reason: REASON
+    };
+    // The turn that asks: one call for all six rules, one approval
+    const asking = await turn(disableAll, [everyRule], []);
+    expect(asking.offeredTools).toEqual([true]);
+    expect(asking.askedForApproval).toBe(true);
+    // The turn after the approval: four switched off, two refused as
+    // locked, and the model explains with no tools
+    const approved = await turn(
+      afterApproval(everyRule, true),
+      [everyRule],
+      []
+    );
+    expect(approved.offeredTools).toEqual([false]);
+    expect(approved.toolCalls).toBe(0);
+    expect(approved.askedForApproval).toBe(false);
+    expect(approved.rulesAfter.switchedOff.map((rule) => rule.id)).toEqual(
+      UNLOCKED
+    );
+    expect(approved.onChange).toHaveBeenCalledTimes(1);
   });
 
   it(`still stops at ${MAX_CHAT_STEPS} steps when every call succeeds`, async () => {
@@ -276,7 +342,7 @@ describe("the disable-all loop, replayed (D28)", () => {
       prompt: "Which rules are on?",
       tools,
       stopWhen: chatStopWhen<typeof tools>(),
-      prepareStep: explainAfterRefusal<typeof tools>()
+      prepareStep: explainAfterRefusal<typeof tools>("System prompt.")
     });
     await result.consumeStream();
     expect(calls).toBe(MAX_CHAT_STEPS);
@@ -307,6 +373,28 @@ describe("lastCallRefused", () => {
     expect(lastCallRefused([toolMessage({ type: "execution-denied" })])).toBe(
       true
     );
+  });
+
+  it("is true after a batch change that refused any of its rules (D29)", () => {
+    expect(
+      lastCallRefused([
+        toolMessage({
+          type: "json",
+          value: {
+            switchedOff: ["validate-input"],
+            refused: [{ ruleId: "no-secrets" }]
+          }
+        })
+      ])
+    ).toBe(true);
+    expect(
+      lastCallRefused([
+        toolMessage({
+          type: "json",
+          value: { switchedOff: ["validate-input"], refused: [] }
+        })
+      ])
+    ).toBe(false);
   });
 
   it("is false after a successful call, or when the last message isn't a tool result", () => {

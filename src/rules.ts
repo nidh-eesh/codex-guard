@@ -120,3 +120,16 @@ export function isLockedRuleId(id: string): boolean {
 export function isStarterRuleId(id: string): boolean {
   return STARTER_PACK.some((rule) => rule.id === id);
 }
+
+// A custom rule's ID: the prefix, then the first hex characters of a UUID
+const CUSTOM_RULE_ID_SHAPE = new RegExp(
+  `^${CUSTOM_RULE_ID_PREFIX}[0-9a-f]{${CUSTOM_RULE_ID_LENGTH - CUSTOM_RULE_ID_PREFIX.length}}$`
+);
+
+/**
+ * Whether any rule could have this ID: a starter ID, or the shape every
+ * custom rule ID has. No rule has any other ID, in any workspace (D28).
+ */
+export function isPossibleRuleId(id: string): boolean {
+  return isStarterRuleId(id) || CUSTOM_RULE_ID_SHAPE.test(id);
+}

@@ -1,14 +1,16 @@
-import { tool } from "ai";
+import { tool, type ModelMessage } from "ai";
 import { z } from "zod";
 import {
   addRule,
-  argumentRefusal,
   readRules,
-  removeRule,
-  restoreRule,
+  refusedOnCallAlone,
+  removeRules,
+  restoreRules,
   RuleError,
+  ruleIdsOf,
   type RuleTables
 } from "./rule-changes";
+import { MAX_ACTIVE_RULES } from "./rules";
 
 /**
  * The text shown for a failed tool call: a RuleError's own message
@@ -19,21 +21,38 @@ export function toolErrorText(error: unknown): string {
   return error instanceof RuleError ? error.message : "An error occurred.";
 }
 
-const ruleId = z
-  .string()
-  .max(64)
-  .describe("The rule's ID, exactly as listRules shows it");
+const ruleIds = z
+  .array(z.string().max(64))
+  .min(1)
+  .max(MAX_ACTIVE_RULES)
+  .describe("Every rule to change, by ID exactly as listRules shows it");
 
 /**
- * A call refused on its arguments alone (a locked rule, a length limit, a
- * missing or placeholder reason) can't change anything whenever it runs, so
- * it runs without asking a person and `execute` refuses it at once. A call
- * whose outcome depends on the rules in SQLite waits for approval (D28).
+ * The text of the user's messages the model can see: its 10-message window
+ * (D26). A switch-off reason must come from here (D28).
  */
-const unlessRefusedOnArguments =
+export function userTextsOf(messages: readonly ModelMessage[]): string[] {
+  return messages.flatMap((message) => {
+    if (message.role !== "user") return [];
+    return typeof message.content === "string"
+      ? [message.content]
+      : message.content.flatMap((part) =>
+          part.type === "text" ? [part.text] : []
+        );
+  });
+}
+
+/**
+ * A call that nothing in it could pass, whatever the rules in SQLite are (a
+ * locked rule, a length limit, a missing, placeholder or unquoted reason),
+ * runs without asking a person, and `execute` refuses it at once. A call
+ * with any change whose outcome depends on the rules waits for approval
+ * (D28).
+ */
+const unlessRefusedOnCallAlone =
   (toolName: string) =>
-  (input: unknown): boolean =>
-    argumentRefusal(toolName, input) === undefined;
+  (input: unknown, { messages }: { messages: ModelMessage[] }): boolean =>
+    !refusedOnCallAlone(toolName, input, userTextsOf(messages));
 
 /**
  * The chat model's tools. Rules change only inside the `execute` of addRule,
@@ -64,7 +83,7 @@ export function ruleTools(
             "error: a violation fails the review. warning: it's reported, but the review can still pass."
           )
       }),
-      needsApproval: unlessRefusedOnArguments("addRule"),
+      needsApproval: unlessRefusedOnCallAlone("addRule"),
       execute: async (input) => {
         const rule = addRule(tables, input, now());
         onChange();
@@ -74,35 +93,39 @@ export function ruleTools(
 
     removeRule: tool({
       description:
-        "Delete a custom rule, or switch off a recommended rule, which needs a reason. Locked rules can't be removed. A person approves the change first.",
+        "Delete custom rules, or switch off recommended rules, which needs a reason. Name every rule to change in one call; one reason covers them all. Locked rules can't be removed. A person approves the change first.",
       inputSchema: z.object({
-        ruleId,
+        ruleIds,
         reason: z
           .string()
           .optional()
           .describe(
-            "Why the team is switching off a recommended rule, in the user's own words, 10-200 characters. If the user hasn't said why, ask them; never make one up."
+            "Why the team is switching off the recommended rules, copied exactly from the user's message, 10-200 characters. If the user hasn't said why, ask them; never make one up."
           )
       }),
-      needsApproval: unlessRefusedOnArguments("removeRule"),
-      execute: async (input) => {
-        const removal = removeRule(tables, input, now());
+      needsApproval: unlessRefusedOnCallAlone("removeRule"),
+      execute: async (input, { messages }) => {
+        // Applies what it can and reports each rule; throws if nothing changed
+        const report = removeRules(
+          tables,
+          { ruleIds: ruleIdsOf(input), reason: input.reason },
+          now(),
+          userTextsOf(messages)
+        );
         onChange();
-        return removal.kind === "deleted"
-          ? { deleted: removal.rule.id }
-          : { switchedOff: removal.rule.id, reason: removal.reason };
+        return report;
       }
     }),
 
     restoreRule: tool({
       description:
-        "Switch a recommended rule back on. A person approves the change first.",
-      inputSchema: z.object({ ruleId }),
-      needsApproval: unlessRefusedOnArguments("restoreRule"),
+        "Switch recommended rules back on. Name every rule in one call. A person approves the change first.",
+      inputSchema: z.object({ ruleIds }),
+      needsApproval: unlessRefusedOnCallAlone("restoreRule"),
       execute: async (input) => {
-        const rule = restoreRule(tables, input);
+        const report = restoreRules(tables, { ruleIds: ruleIdsOf(input) });
         onChange();
-        return { restored: rule.id };
+        return report;
       }
     })
   };

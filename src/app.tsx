@@ -5,7 +5,7 @@ import { getToolName, isToolUIPart, type UIMessage } from "ai";
 import type { ChatAgent } from "./server";
 import type { ResolvedRules } from "./rules";
 import type { WorkspaceState } from "./rule-state";
-import { ruleChangeRefusal } from "./rule-changes";
+import { ruleChangePreview, ruleIdsOf } from "./rule-changes";
 import {
   budgetMeterText,
   currentMeter,
@@ -146,26 +146,32 @@ function describeRuleChange(
   toolName: string,
   input: unknown,
   rules: ResolvedRules | null
-): string | null {
+): string[] {
   const args = (input ?? {}) as Record<string, unknown>;
   const str = (value: unknown) => (typeof value === "string" ? value : "");
-  const id = str(args.ruleId);
+  const known = (id: string) =>
+    rules?.active.find((r) => r.id === id) ??
+    rules?.switchedOff.find((r) => r.id === id);
   switch (toolName) {
     case "addRule":
-      return `Add a ${str(args.severity)} rule: "${str(args.text)}"`;
+      return [`Add a ${str(args.severity)} rule: "${str(args.text)}"`];
     case "removeRule": {
-      const rule = rules?.active.find((r) => r.id === id);
-      if (!rule) return null;
-      return rule.source === "custom"
-        ? `Delete the custom rule "${rule.text}"`
-        : `Switch off "${rule.text}". Reason: "${str(args.reason)}"`;
+      const lines = ruleIdsOf(input).map((id) => {
+        const rule = known(id);
+        if (!rule) return `\`${id}\``;
+        return "source" in rule && rule.source === "custom"
+          ? `Delete the custom rule "${rule.text}"`
+          : `Switch off "${rule.text}"`;
+      });
+      return args.reason ? [...lines, `Reason: "${str(args.reason)}"`] : lines;
     }
-    case "restoreRule": {
-      const rule = rules?.switchedOff.find((r) => r.id === id);
-      return rule ? `Switch "${rule.text}" back on` : null;
-    }
+    case "restoreRule":
+      return ruleIdsOf(input).map((id) => {
+        const rule = known(id);
+        return rule ? `Switch "${rule.text}" back on` : `\`${id}\``;
+      });
     default:
-      return null;
+      return [];
   }
 }
 
@@ -291,11 +297,13 @@ function ToolPartView({
   if ("approval" in part && part.state === "approval-requested") {
     const approvalId = (part.approval as { id?: string })?.id;
     const description = describeRuleChange(toolName, part.input, rules);
-    // The server's own checks, run on the rules this page has: a change that
-    // will be refused can't be approved (D28). The server checks again.
-    const refusal = rules
-      ? ruleChangeRefusal(toolName, part.input, rules)
-      : undefined;
+    // The server's own checks, run on the rules this page has: a call where
+    // nothing can happen can't be approved (D28). The server checks again.
+    // Until the rules arrive nothing can be checked, so nothing is approved.
+    const preview = rules
+      ? ruleChangePreview(toolName, part.input, rules)
+      : { refusals: [], allRefused: false };
+    const canApprove = rules !== null && !preview.allRefused;
     return (
       <div className="flex justify-start">
         <Surface className="max-w-[85%] px-4 py-3 rounded-xl ring-2 ring-kumo-warning">
@@ -305,17 +313,27 @@ function ToolPartView({
               Approval needed: {toolName}
             </Text>
           </div>
-          {description && (
-            <p className="mb-2 text-sm text-kumo-default">{description}</p>
+          {description.length > 0 && (
+            <ul className="mb-2 space-y-0.5 text-sm text-kumo-default">
+              {description.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
           )}
-          {refusal && (
-            <p
-              role="alert"
-              className="mb-2 flex items-start gap-1.5 text-sm text-kumo-danger"
-            >
-              <WarningCircleIcon size={16} className="mt-0.5 shrink-0" />
-              <span>This will be refused: {refusal}</span>
-            </p>
+          {preview.refusals.length > 0 && (
+            <div role="alert" className="mb-2 text-sm text-kumo-danger">
+              <p className="flex items-center gap-1.5">
+                <WarningCircleIcon size={16} className="shrink-0" />
+                {preview.allRefused
+                  ? "This will be refused:"
+                  : "Some of this will be refused:"}
+              </p>
+              <ul className="ml-6 list-disc">
+                {preview.refusals.map((message) => (
+                  <li key={message}>{message}</li>
+                ))}
+              </ul>
+            </div>
           )}
           <div className="font-mono mb-3">
             <Text size="xs" variant="secondary">
@@ -327,9 +345,9 @@ function ToolPartView({
               variant="primary"
               size="sm"
               icon={<CheckCircleIcon size={14} />}
-              disabled={Boolean(refusal)}
+              disabled={!canApprove}
               onClick={() => {
-                if (approvalId && !refusal) {
+                if (approvalId && canApprove) {
                   addToolApprovalResponse({ id: approvalId, approved: true });
                 }
               }}

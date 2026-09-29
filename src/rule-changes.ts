@@ -7,6 +7,7 @@ import {
   RULE_TEXT_MIN_LENGTH,
   STARTER_PACK,
   isLockedRuleId,
+  isPossibleRuleId,
   isStarterRuleId,
   type ActiveRule,
   type CustomRule,
@@ -67,6 +68,11 @@ const refuse = {
     ),
   noReason: () =>
     new RuleError("A reason is required to switch off a recommended rule."),
+  unquotedReason: () =>
+    new RuleError(
+      "The reason must be in the user's own words, and it isn't in their recent messages. Ask the user why the team is switching this rule off."
+    ),
+  noRules: () => new RuleError("Name at least one rule to change."),
   weakReason: () =>
     new RuleError(
       `The reason must say why the team is switching this rule off, in at least ${REASON_MIN_LENGTH} characters.`
@@ -162,7 +168,8 @@ function addArgumentRefusal(input: { text: string }): RuleError | undefined {
 
 /**
  * Why removing this rule would be refused on its arguments alone: it's
- * locked, or it's a recommended rule and the reason isn't one. A reason is
+ * locked, no rule could have its ID, or it's a recommended rule and the
+ * reason isn't one. A reason is
  * checked only for starter IDs, which are fixed in code; a custom rule needs
  * none.
  */
@@ -172,6 +179,7 @@ function removeArgumentRefusal(input: {
 }): RuleError | undefined {
   const { ruleId } = input;
   if (isLockedRuleId(ruleId)) return refuse.locked(ruleId);
+  if (!isPossibleRuleId(ruleId)) return refuse.unknown(ruleId);
   if (!isStarterRuleId(ruleId)) return undefined;
   const reason = clean(input.reason ?? "");
   if (!reason) return refuse.noReason();
@@ -186,35 +194,90 @@ function removeArgumentRefusal(input: {
 function restoreArgumentRefusal(input: {
   ruleId: string;
 }): RuleError | undefined {
-  return isLockedRuleId(input.ruleId)
-    ? refuse.lockedRestore(input.ruleId)
-    : undefined;
+  if (isLockedRuleId(input.ruleId)) return refuse.lockedRestore(input.ruleId);
+  if (!isPossibleRuleId(input.ruleId)) return refuse.unknown(input.ruleId);
+  return undefined;
 }
 
 const asString = (value: unknown) => (typeof value === "string" ? value : "");
 
 /**
- * A refusal that doesn't depend on the rules in SQLite, for `needsApproval`:
- * the rule tools run a call that meets one without asking a person, and
- * `execute` refuses it at once. A field that isn't a string counts as empty.
+ * The rule IDs a removeRule or restoreRule call names, once each. A call
+ * made before the tools took lists names one `ruleId`; it's read as a list
+ * of one, so an approval pending across a deploy still works.
  */
-export function argumentRefusal(
-  toolName: string,
-  input: unknown
+export function ruleIdsOf(input: unknown): string[] {
+  const args = (input ?? {}) as Record<string, unknown>;
+  const ids = Array.isArray(args.ruleIds)
+    ? args.ruleIds.filter((id): id is string => typeof id === "string")
+    : typeof args.ruleId === "string"
+      ? [args.ruleId]
+      : [];
+  return [...new Set(ids)];
+}
+
+/** Text compared for a quoted reason: lowercase, whitespace collapsed. */
+function quoteKey(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/**
+ * A reason has to be the user's own words: it must appear in one of their
+ * messages the model can see (D28). Depends only on the call and the
+ * history, never on the rules in SQLite.
+ */
+function reasonQuoteRefusal(
+  reason: string,
+  userTexts: readonly string[]
 ): RuleError | undefined {
+  const key = quoteKey(reason);
+  return userTexts.some((text) => quoteKey(text).includes(key))
+    ? undefined
+    : refuse.unquotedReason();
+}
+
+/**
+ * Why changing one rule would be refused whatever the rules in SQLite are:
+ * its arguments, or, to switch off a recommended rule, a reason that isn't
+ * in the user's messages. A change refused this way can't happen however
+ * long it waits, so it isn't put to a person (D28).
+ */
+export function callRefusal(
+  toolName: "removeRule" | "restoreRule",
+  ruleId: string,
+  reason: string | undefined,
+  userTexts: readonly string[]
+): RuleError | undefined {
+  if (toolName === "restoreRule") return restoreArgumentRefusal({ ruleId });
+  const argument = removeArgumentRefusal({ ruleId, reason });
+  if (argument || !isStarterRuleId(ruleId)) return argument;
+  return reasonQuoteRefusal(clean(reason ?? ""), userTexts);
+}
+
+/**
+ * For `needsApproval`: whether every change in the call would be refused
+ * whatever the rules in SQLite are. If any change could happen, a person
+ * approves the call.
+ */
+export function refusedOnCallAlone(
+  toolName: string,
+  input: unknown,
+  userTexts: readonly string[]
+): boolean {
   const args = (input ?? {}) as Record<string, unknown>;
   switch (toolName) {
     case "addRule":
-      return addArgumentRefusal({ text: asString(args.text) });
+      return addArgumentRefusal({ text: asString(args.text) }) !== undefined;
     case "removeRule":
-      return removeArgumentRefusal({
-        ruleId: asString(args.ruleId),
-        reason: asString(args.reason)
-      });
-    case "restoreRule":
-      return restoreArgumentRefusal({ ruleId: asString(args.ruleId) });
+    case "restoreRule": {
+      const reason = asString(args.reason);
+      return ruleIdsOf(input).every(
+        (ruleId) =>
+          callRefusal(toolName, ruleId, reason, userTexts) !== undefined
+      );
+    }
     default:
-      return undefined;
+      return false;
   }
 }
 
@@ -274,29 +337,46 @@ export function restoreRefusal(
   return undefined;
 }
 
+/** What the approval card shows for a call before a person approves it. */
+export interface ChangePreview {
+  /** Each change that will be refused, as the server will word it. */
+  refusals: string[];
+  /** Nothing in the call can happen, so Approve is disabled. */
+  allRefused: boolean;
+}
+
 /**
- * The refusal a rule tool call would meet, for the approval card. A field
- * that isn't a string counts as empty; `execute` checks the real input.
+ * The approval card's preview: the tools' own checks, run on the rules in
+ * agent state (D28). The server checks again, in order, when the call runs.
+ * A field that isn't a string counts as empty.
  */
-export function ruleChangeRefusal(
+export function ruleChangePreview(
   toolName: string,
   input: unknown,
   rules: ResolvedRules
-): string | undefined {
+): ChangePreview {
   const args = (input ?? {}) as Record<string, unknown>;
-  switch (toolName) {
-    case "addRule":
-      return addRefusal({ text: asString(args.text) }, rules)?.message;
-    case "removeRule":
-      return removeRefusal(
-        { ruleId: asString(args.ruleId), reason: asString(args.reason) },
-        rules
-      )?.message;
-    case "restoreRule":
-      return restoreRefusal({ ruleId: asString(args.ruleId) }, rules)?.message;
-    default:
-      return undefined;
+  if (toolName === "addRule") {
+    const refusal = addRefusal({ text: asString(args.text) }, rules);
+    return refusal
+      ? { refusals: [refusal.message], allRefused: true }
+      : { refusals: [], allRefused: false };
   }
+  if (toolName !== "removeRule" && toolName !== "restoreRule") {
+    return { refusals: [], allRefused: false };
+  }
+  const ids = ruleIdsOf(input);
+  if (ids.length === 0) {
+    return { refusals: [refuse.noRules().message], allRefused: true };
+  }
+  const refusals = ids.flatMap((ruleId) => {
+    const refusal =
+      toolName === "removeRule"
+        ? removeRefusal({ ruleId, reason: asString(args.reason) }, rules)
+        : restoreRefusal({ ruleId }, rules);
+    return refusal ? [refusal.message] : [];
+  });
+  return { refusals, allRefused: refusals.length === ids.length };
 }
 
 // Each change reads, checks and writes without awaiting in between. A Durable
@@ -365,4 +445,107 @@ export function restoreRule(
   )!;
   tables.deleteDisabledDefault(input.ruleId);
   return rule;
+}
+
+/** A rule a call named but didn't change, and why. */
+export interface ItemRefusal {
+  ruleId: string;
+  message: string;
+}
+
+/** The rules after a change, so the model doesn't need to call listRules. */
+export interface RuleIdsNow {
+  active: string[];
+  switchedOff: string[];
+}
+
+export interface RemovalReport {
+  switchedOff: string[];
+  deleted: string[];
+  /** The stored reason, when a recommended rule was switched off. */
+  reason?: string;
+  refused: ItemRefusal[];
+  rules: RuleIdsNow;
+}
+
+export interface RestoreReport {
+  restored: string[];
+  refused: ItemRefusal[];
+  rules: RuleIdsNow;
+}
+
+function ruleIdsNow(tables: RuleTables): RuleIdsNow {
+  const { active, switchedOff } = readRules(tables);
+  return {
+    active: active.map((rule) => rule.id),
+    switchedOff: switchedOff.map((rule) => rule.id)
+  };
+}
+
+/**
+ * Runs `change` for each rule in turn, each against the rules as the ones
+ * before it left them, and records the refusals. When nothing changed, the
+ * call fails with each distinct refusal, so it reads as the refusal it is.
+ */
+function changeEach(
+  ruleIds: readonly string[],
+  change: (ruleId: string) => void
+): ItemRefusal[] {
+  if (ruleIds.length === 0) throw refuse.noRules();
+  const refused: ItemRefusal[] = [];
+  for (const ruleId of ruleIds) {
+    try {
+      change(ruleId);
+    } catch (error) {
+      if (!(error instanceof RuleError)) throw error;
+      refused.push({ ruleId, message: error.message });
+    }
+  }
+  if (refused.length === ruleIds.length) {
+    // Each distinct refusal once: four rules without a reason say so once
+    const messages = new Set(refused.map((item) => item.message));
+    throw new RuleError([...messages].join(" "));
+  }
+  return refused;
+}
+
+/**
+ * Deletes custom rules and switches off recommended ones, with one shared
+ * reason, applying every change that passes its checks (D29). The whole
+ * call runs without awaiting, so no other change can interleave with it.
+ */
+export function removeRules(
+  tables: RuleTables,
+  input: { ruleIds: readonly string[]; reason?: string },
+  now: number,
+  userTexts: readonly string[]
+): RemovalReport {
+  const switchedOff: string[] = [];
+  const deleted: string[] = [];
+  const refused = changeEach(ruleIdsOf(input), (ruleId) => {
+    const refusal = callRefusal("removeRule", ruleId, input.reason, userTexts);
+    if (refusal) throw refusal;
+    const removal = removeRule(tables, { ruleId, reason: input.reason }, now);
+    (removal.kind === "deleted" ? deleted : switchedOff).push(ruleId);
+  });
+  return {
+    switchedOff,
+    deleted,
+    ...(switchedOff.length > 0 && { reason: clean(input.reason ?? "") }),
+    refused,
+    rules: ruleIdsNow(tables)
+  };
+}
+
+/** Switches recommended rules back on, applying every one that passes (D29). */
+export function restoreRules(
+  tables: RuleTables,
+  input: { ruleIds: readonly string[] }
+): RestoreReport {
+  const restored: string[] = [];
+  const refused = changeEach(ruleIdsOf(input), (ruleId) => {
+    restoreRule(tables, { ruleId });
+    restored.push(ruleId);
+  });
+  return { restored, refused, rules: ruleIdsNow(tables) };
 }
