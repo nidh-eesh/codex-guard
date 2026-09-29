@@ -50,6 +50,13 @@ const PLACEHOLDER_REASONS = new Set([
  */
 export class RuleError extends Error {}
 
+/** A rule ID that no rule in the workspace has. */
+class UnknownRuleError extends RuleError {
+  constructor(readonly ruleId: string) {
+    super(`No rule with ID \`${ruleId}\` exists in this workspace.`);
+  }
+}
+
 const refuse = {
   textLength: () =>
     new RuleError(
@@ -60,8 +67,7 @@ const refuse = {
     new RuleError(
       `This workspace has ${MAX_ACTIVE_RULES} rules, the maximum. Remove one first.`
     ),
-  unknown: (id: string) =>
-    new RuleError(`No rule with ID \`${id}\` exists in this workspace.`),
+  unknown: (id: string) => new UnknownRuleError(id),
   locked: (id: string) =>
     new RuleError(
       `Rule \`${id}\` is locked and can't be switched off. Locked rules can't be changed; don't try again.`
@@ -73,6 +79,12 @@ const refuse = {
       "The reason must be in the user's own words, and it isn't in their recent messages. Ask the user why the team is switching this rule off."
     ),
   noRules: () => new RuleError("Name at least one rule to change."),
+  invalidCall: () =>
+    new RuleError("The call didn't match the tool, so nothing changed."),
+  notApproved: () =>
+    new RuleError(
+      "This change wasn't approved, so nothing changed. Ask for it again to approve it."
+    ),
   weakReason: () =>
     new RuleError(
       `The reason must say why the team is switching this rule off, in at least ${REASON_MIN_LENGTH} characters.`
@@ -254,31 +266,240 @@ export function callRefusal(
   return reasonQuoteRefusal(clean(reason ?? ""), userTexts);
 }
 
+const idList = (ids: readonly string[]) => ids.join(", ");
+
 /**
- * For `needsApproval`: whether every change in the call would be refused
- * whatever the rules in SQLite are. If any change could happen, a person
- * approves the call.
+ * The IDs `removeRule` may name: active rules that aren't locked, so the
+ * unlocked starter rules and the custom rules (D31). Server-generated only.
  */
-export function refusedOnCallAlone(
+export function removableIds(rules: ResolvedRules): string[] {
+  return rules.active.filter((rule) => !rule.locked).map((rule) => rule.id);
+}
+
+/** The IDs `restoreRule` may name: the switched-off starter rules (D31). */
+export function restorableIds(rules: ResolvedRules): string[] {
+  return rules.switchedOff.map((rule) => rule.id);
+}
+
+/**
+ * What the call could have named instead, for a call that named unknown
+ * IDs: the model sees the real IDs rather than guessing again.
+ */
+export function changeableRules(
+  toolName: "removeRule" | "restoreRule",
+  rules: ResolvedRules
+): string {
+  if (toolName === "restoreRule") {
+    const off = rules.switchedOff.map((rule) => rule.id);
+    return off.length > 0
+      ? `Rules you can switch back on: ${idList(off)}.`
+      : "No rule is switched off.";
+  }
+  const switchable = rules.active
+    .filter((rule) => rule.source === "starter" && !rule.locked)
+    .map((rule) => rule.id);
+  const deletable = rules.active
+    .filter((rule) => rule.source === "custom")
+    .map((rule) => rule.id);
+  const parts = [
+    ...(switchable.length > 0
+      ? [`Rules you can switch off: ${idList(switchable)}.`]
+      : []),
+    ...(deletable.length > 0
+      ? [`Custom rules you can delete: ${idList(deletable)}.`]
+      : [])
+  ];
+  return parts.length > 0
+    ? parts.join(" ")
+    : "No rule can be switched off or deleted right now.";
+}
+
+/**
+ * The error for a call where nothing changed: each distinct refusal once,
+ * with every unknown ID in one sentence followed by the IDs that could
+ * have been named.
+ */
+function callRefusedError(
+  toolName: string,
+  refusals: readonly RuleError[],
+  rules: ResolvedRules,
+  extra: readonly string[] = []
+): RuleError {
+  const unknown = refusals.flatMap((refusal) =>
+    refusal instanceof UnknownRuleError ? [refusal.ruleId] : []
+  );
+  const messages = new Set(
+    refusals
+      .filter((refusal) => !(refusal instanceof UnknownRuleError))
+      .map((refusal) => refusal.message)
+  );
+  if (
+    unknown.length > 0 &&
+    (toolName === "removeRule" || toolName === "restoreRule")
+  ) {
+    const ids = unknown.map((id) => `\`${id}\``);
+    messages.add(
+      ids.length === 1
+        ? `No rule with ID ${ids[0]} exists in this workspace.`
+        : `No rules with IDs ${idList(ids)} exist in this workspace.`
+    );
+    messages.add(changeableRules(toolName, rules));
+  }
+  for (const message of extra) messages.add(message);
+  return new RuleError([...messages].join(" "));
+}
+
+/**
+ * The refusal for a call the tool's schema rejected before any of our code
+ * ran, such as an ID outside the tool's list (D31): each rule's own
+ * refusal, worked out from the input, so it reads like any other refusal.
+ */
+export function schemaRefusal(
   toolName: string,
   input: unknown,
+  rules: ResolvedRules
+): RuleError {
+  if (toolName !== "removeRule" && toolName !== "restoreRule") {
+    return refuse.invalidCall();
+  }
+  const ids = ruleIdsOf(input);
+  if (ids.length === 0) return refuse.noRules();
+  const reason = asString(((input ?? {}) as Record<string, unknown>).reason);
+  const refusals = ids.flatMap((ruleId) => {
+    const refusal =
+      toolName === "removeRule"
+        ? removeRefusal({ ruleId, reason }, rules)
+        : restoreRefusal({ ruleId }, rules);
+    return refusal ? [refusal] : [];
+  });
+  return refusals.length > 0
+    ? callRefusedError(toolName, refusals, rules)
+    : refuse.invalidCall();
+}
+
+/** One rule an addRule call adds. */
+export interface NewRule {
+  text: string;
+  severity: Severity;
+}
+
+/**
+ * The rules an addRule call adds. A call made before addRule took a list
+ * names one rule at the top level; it's read as a list of one.
+ */
+export function rulesToAdd(input: unknown): NewRule[] {
+  const args = (input ?? {}) as Record<string, unknown>;
+  const list: unknown[] = Array.isArray(args.rules)
+    ? args.rules
+    : "text" in args
+      ? [args]
+      : [];
+  return list.map((item) => {
+    const rule = (item ?? {}) as Record<string, unknown>;
+    return {
+      text: asString(rule.text),
+      severity: rule.severity === "error" ? "error" : "warning"
+    };
+  });
+}
+
+/**
+ * Each new rule's refusal, if any, checked in order against the rules the
+ * earlier ones would leave: two copies of one text in a call, or a call
+ * that reaches the 50-rule cap part way, refuse the later ones.
+ */
+function addEach(
+  items: readonly NewRule[],
+  rules: ResolvedRules
+): (RuleError | undefined)[] {
+  let active = [...rules.active];
+  return items.map((item) => {
+    const refusal = addRefusal(item, { ...rules, active });
+    if (!refusal) {
+      active = [
+        ...active,
+        {
+          id: "",
+          text: clean(item.text),
+          severity: item.severity,
+          locked: false,
+          source: "custom"
+        }
+      ];
+    }
+    return refusal;
+  });
+}
+
+/**
+ * Each change in a call checked against `rules` and the history, without
+ * changing anything: the refusals, and how many changes would pass.
+ */
+function checkEach(
+  toolName: string,
+  input: unknown,
+  rules: ResolvedRules,
+  userTexts: readonly string[]
+): { refusals: RuleError[]; passing: number } {
+  const args = (input ?? {}) as Record<string, unknown>;
+  if (toolName === "addRule") {
+    const items = rulesToAdd(input);
+    if (items.length === 0) return { refusals: [refuse.noRules()], passing: 0 };
+    const refusals = addEach(items, rules).filter(
+      (refusal): refusal is RuleError => refusal !== undefined
+    );
+    return { refusals, passing: items.length - refusals.length };
+  }
+  if (toolName !== "removeRule" && toolName !== "restoreRule") {
+    return { refusals: [], passing: 1 };
+  }
+  const ids = ruleIdsOf(input);
+  if (ids.length === 0) return { refusals: [refuse.noRules()], passing: 0 };
+  const reason = asString(args.reason);
+  const refusals = ids.flatMap((ruleId) => {
+    const refusal =
+      callRefusal(toolName, ruleId, reason, userTexts) ??
+      (toolName === "removeRule"
+        ? removeRefusal({ ruleId, reason }, rules)
+        : restoreRefusal({ ruleId }, rules));
+    return refusal ? [refusal] : [];
+  });
+  return { refusals, passing: ids.length - refusals.length };
+}
+
+/**
+ * For `needsApproval`: whether every change in the call would be refused,
+ * checked on the rules as they are now. Such a call runs without asking a
+ * person and can only be refused (D30); any other call waits for approval.
+ */
+export function wouldBeRefused(
+  toolName: string,
+  input: unknown,
+  rules: ResolvedRules,
   userTexts: readonly string[]
 ): boolean {
-  const args = (input ?? {}) as Record<string, unknown>;
-  switch (toolName) {
-    case "addRule":
-      return addArgumentRefusal({ text: asString(args.text) }) !== undefined;
-    case "removeRule":
-    case "restoreRule": {
-      const reason = asString(args.reason);
-      return ruleIdsOf(input).every(
-        (ruleId) =>
-          callRefusal(toolName, ruleId, reason, userTexts) !== undefined
-      );
-    }
-    default:
-      return false;
-  }
+  return checkEach(toolName, input, rules, userTexts).passing === 0;
+}
+
+/**
+ * What a call that ran without approval gets: always a refusal, never a
+ * change (D30). Each distinct refusal once; if the rules changed since the
+ * check so that part of the call would now pass, it says so, and nothing
+ * changes anyway.
+ */
+export function unapprovedRefusal(
+  toolName: string,
+  input: unknown,
+  rules: ResolvedRules,
+  userTexts: readonly string[]
+): RuleError {
+  const { refusals, passing } = checkEach(toolName, input, rules, userTexts);
+  return callRefusedError(
+    toolName,
+    refusals,
+    rules,
+    passing > 0 ? [refuse.notApproved().message] : []
+  );
 }
 
 // Each change's full checks, arguments first, then state. `execute` runs them
@@ -357,10 +578,14 @@ export function ruleChangePreview(
 ): ChangePreview {
   const args = (input ?? {}) as Record<string, unknown>;
   if (toolName === "addRule") {
-    const refusal = addRefusal({ text: asString(args.text) }, rules);
-    return refusal
-      ? { refusals: [refusal.message], allRefused: true }
-      : { refusals: [], allRefused: false };
+    const items = rulesToAdd(input);
+    if (items.length === 0) {
+      return { refusals: [refuse.noRules().message], allRefused: true };
+    }
+    const refusals = addEach(items, rules).flatMap((refusal) =>
+      refusal ? [refusal.message] : []
+    );
+    return { refusals, allRefused: refusals.length === items.length };
   }
   if (toolName !== "removeRule" && toolName !== "restoreRule") {
     return { refusals: [], allRefused: false };
@@ -399,6 +624,45 @@ export function addRule(
   };
   tables.insertCustomRule(rule);
   return rule;
+}
+
+export interface AddReport {
+  added: CustomRule[];
+  refused: { text: string; message: string }[];
+  /** The rules after the change, so the model doesn't need to call listRules. */
+  rules: RuleIdsNow;
+}
+
+/**
+ * Adds custom rules, applying each one that passes its checks against the
+ * rules the earlier ones left (D32). Reports each rule; when none was
+ * added, fails with each distinct refusal. Runs without awaiting, so no
+ * other change can interleave with it.
+ */
+export function addRules(
+  tables: RuleTables,
+  input: { rules: readonly NewRule[] },
+  now: number,
+  newId: () => string = newCustomRuleId
+): AddReport {
+  const items = rulesToAdd(input);
+  if (items.length === 0) throw refuse.noRules();
+  const added: CustomRule[] = [];
+  const refused: AddReport["refused"] = [];
+  const errors: RuleError[] = [];
+  for (const item of items) {
+    try {
+      added.push(addRule(tables, item, now, newId));
+    } catch (error) {
+      if (!(error instanceof RuleError)) throw error;
+      errors.push(error);
+      refused.push({ text: clean(item.text), message: error.message });
+    }
+  }
+  if (added.length === 0) {
+    throw new RuleError([...new Set(errors.map((e) => e.message))].join(" "));
+  }
+  return { added, refused, rules: ruleIdsNow(tables) };
 }
 
 export type Removal =
@@ -488,23 +752,25 @@ function ruleIdsNow(tables: RuleTables): RuleIdsNow {
  * call fails with each distinct refusal, so it reads as the refusal it is.
  */
 function changeEach(
+  tables: RuleTables,
+  toolName: "removeRule" | "restoreRule",
   ruleIds: readonly string[],
   change: (ruleId: string) => void
 ): ItemRefusal[] {
   if (ruleIds.length === 0) throw refuse.noRules();
+  const errors: RuleError[] = [];
   const refused: ItemRefusal[] = [];
   for (const ruleId of ruleIds) {
     try {
       change(ruleId);
     } catch (error) {
       if (!(error instanceof RuleError)) throw error;
+      errors.push(error);
       refused.push({ ruleId, message: error.message });
     }
   }
   if (refused.length === ruleIds.length) {
-    // Each distinct refusal once: four rules without a reason say so once
-    const messages = new Set(refused.map((item) => item.message));
-    throw new RuleError([...messages].join(" "));
+    throw callRefusedError(toolName, errors, readRules(tables));
   }
   return refused;
 }
@@ -522,12 +788,22 @@ export function removeRules(
 ): RemovalReport {
   const switchedOff: string[] = [];
   const deleted: string[] = [];
-  const refused = changeEach(ruleIdsOf(input), (ruleId) => {
-    const refusal = callRefusal("removeRule", ruleId, input.reason, userTexts);
-    if (refusal) throw refusal;
-    const removal = removeRule(tables, { ruleId, reason: input.reason }, now);
-    (removal.kind === "deleted" ? deleted : switchedOff).push(ruleId);
-  });
+  const refused = changeEach(
+    tables,
+    "removeRule",
+    ruleIdsOf(input),
+    (ruleId) => {
+      const refusal = callRefusal(
+        "removeRule",
+        ruleId,
+        input.reason,
+        userTexts
+      );
+      if (refusal) throw refusal;
+      const removal = removeRule(tables, { ruleId, reason: input.reason }, now);
+      (removal.kind === "deleted" ? deleted : switchedOff).push(ruleId);
+    }
+  );
   return {
     switchedOff,
     deleted,
@@ -543,9 +819,14 @@ export function restoreRules(
   input: { ruleIds: readonly string[] }
 ): RestoreReport {
   const restored: string[] = [];
-  const refused = changeEach(ruleIdsOf(input), (ruleId) => {
-    restoreRule(tables, { ruleId });
-    restored.push(ruleId);
-  });
+  const refused = changeEach(
+    tables,
+    "restoreRule",
+    ruleIdsOf(input),
+    (ruleId) => {
+      restoreRule(tables, { ruleId });
+      restored.push(ruleId);
+    }
+  );
   return { restored, refused, rules: ruleIdsNow(tables) };
 }

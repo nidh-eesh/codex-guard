@@ -342,3 +342,70 @@ D28 is approved and committed. Next do all of these,
 ````text
 D29 is approved. Write it and commit it.
 ````
+
+### 2026-09-29 08:51 UTC
+
+````text
+Instead of 
+
+<pasted_content id="2b91">
+Approval needed: addRule
+
+Add a warning rule: "Random rule 2"
+This will be refused:
+
+A rule with this text already exists.
+</pasted_content id="2b91">
+
+ Reject the tool call outright if unable to approve anyways
+````
+
+### 2026-09-29 09:27 UTC
+
+````text
+Go with option 1, conditions are: 
+1. Look for approval only in latest assistant messages's approval part for that toolcallId never older turns. Workers AI tool-call IDs may or maynot repeat across turns, add a test where a new call reuses an ID approved in an earlier turn must not write.
+2. Also keep a server side record: when needsApproval return false, store the toolCallId. execute never write for a stored ID. Both checks must pass for a write.
+3. Draft D30 and wait for my OK. Mark D28 "partly superseded by D30" rather than rewriting it. Update the AGENTS.md invariant to "Rules change only inside an approved execute; a call that would be refused is refused at once without asking."
+Tests: an unapproved call never writes even after the rules change so it would succeed. an approved call still writes. The "Random rule 2" replay: adding a duplicate is refused straight away, with no card. and the reused-ID case.
+````
+
+### 2026-09-29 09:33 UTC
+
+````text
+Live test: "Remove all unlocked rules" produced removeRule with invented IDs rule1 to rule10 and the invented reason "no reason provided". It was refused without approval, correctly. Then, in the no-tools step, the model said "I need the current list of rules, please wait" and the turn ended with nothing done.
+
+Fixes:
+1. Chat prompt: "Never guess rule IDs. Before changing rules, call listRules to get the exact IDs." Keep "call listRules only when needed" for questions.
+2. When a call names unknown IDs, the error lists the rule IDs that exist and can be changed, e.g. "Rules you can switch off: validate-input, no-sensitive-logs, explicit-errors, no-console-log." Update the section 5 message.
+3. The no-tools step after a refusal or rejection gets its own system text via prepareStep: "You can't call tools in this reply. Explain what happened and what the user can do next. Don't promise to do anything."
+
+Test: a replay of this exact chat with a mock model. The unknown-ID error must list the real IDs, and the no-tools step must receive the new system text.
+````
+
+### 2026-09-29 12:42 UTC
+
+````text
+D30 is approved. write it and mark D28 " partly superseded by D30". 
+
+Id guessing: neither a or b. Implement a better version of a. make the allowed IDs part of the schema, not the description.
+- removeRule: ruleIds is an array of z.enum of the currently changeable IDs (active unlocked starter rules plus custom rules). Locked IDs are not in the enum.
+- restoreRule: ruleIds is an array of z.enum of the switched-off starter IDs.
+- Rebuild both schemas every turn from SQLite. If a list is empty, leave that tool out of the turn's tools (an empty enum is invalid JSON Schema).
+- IDs are server-generated, so no user-written text enters the tool definitions.
+- Keep the unknown-ID error that lists real IDs as a fallback.
+Tests: the schemas match the rules in state, locked IDs are never in the removeRule enum, an empty list omits the tool, and a call with an ID outside the enum is rejected before execute. Then one live check in a fresh workspace: "Remove all unlocked rules, we use our own linting" should produce one call with the four real IDs and one approval card.
+Put the enum in D30 or a short D31 draft. Then commit messages
+````
+
+### 2026-09-29 13:42 UTC
+
+````text
+Write D31
+````
+
+### 2026-09-29 14:28 UTC
+
+````text
+D32 and D33 are approved. One condition on D32: the written-out-call replacement must be narrow. Replace a reply only if it parses as a call to one of our tool names, never on a loose text match. Add a test that a normal reply containing a code example is left alone.
+````

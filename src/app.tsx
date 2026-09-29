@@ -5,7 +5,7 @@ import { getToolName, isToolUIPart, type UIMessage } from "ai";
 import type { ChatAgent } from "./server";
 import type { ResolvedRules } from "./rules";
 import type { WorkspaceState } from "./rule-state";
-import { ruleChangePreview, ruleIdsOf } from "./rule-changes";
+import { ruleChangePreview, ruleIdsOf, rulesToAdd } from "./rule-changes";
 import {
   budgetMeterText,
   currentMeter,
@@ -154,7 +154,9 @@ function describeRuleChange(
     rules?.switchedOff.find((r) => r.id === id);
   switch (toolName) {
     case "addRule":
-      return [`Add a ${str(args.severity)} rule: "${str(args.text)}"`];
+      return rulesToAdd(input).map(
+        (rule) => `Add a ${rule.severity} rule: "${rule.text}"`
+      );
     case "removeRule": {
       const lines = ruleIdsOf(input).map((id) => {
         const rule = known(id);

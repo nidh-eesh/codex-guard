@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   addRule,
+  addRules,
   callRefusal,
   newCustomRuleId,
   readRules,
-  refusedOnCallAlone,
   removeRule,
   removeRules,
   restoreRule,
@@ -12,6 +12,9 @@ import {
   RuleError,
   ruleChangePreview,
   ruleIdsOf,
+  rulesToAdd,
+  unapprovedRefusal,
+  wouldBeRefused,
   type RuleTables
 } from "./rule-changes";
 import { STARTER_PACK, type CustomRule, type DisabledDefault } from "./rules";
@@ -509,7 +512,13 @@ describe("quoted reasons (D28)", () => {
   });
 });
 
-describe("refusedOnCallAlone: no approval needed to refuse (D28)", () => {
+describe("wouldBeRefused: refused at once, without asking (D30)", () => {
+  // A custom rule, and one recommended rule already off
+  const rules = () =>
+    readRules(
+      memoryTables([customRule(1)], [switchedOffRow("explicit-errors")]).tables
+    );
+
   it.each([
     [
       "removeRule",
@@ -525,25 +534,38 @@ describe("refusedOnCallAlone: no approval needed to refuse (D28)", () => {
     ],
     [
       "removeRule",
-      "a locked rule and an unquoted reason",
-      { ruleIds: ["no-secrets", "validate-input"], reason: REASON },
-      []
-    ],
-    ["restoreRule", "a locked rule", { ruleIds: ["no-secrets"] }, []],
-    [
-      "removeRule",
       "an ID no rule could have",
       { ruleIds: ["all"], reason: "No reason provided" },
       []
     ],
     [
+      "removeRule",
+      "a custom-shaped ID no rule has",
+      { ruleIds: ["c_99999999"] },
+      []
+    ],
+    [
+      "removeRule",
+      "a rule that's already off",
+      { ruleIds: ["explicit-errors"], reason: REASON },
+      SAID
+    ],
+    ["restoreRule", "a locked rule", { ruleIds: ["no-secrets"] }, []],
+    ["restoreRule", "a rule that's on", { ruleIds: ["validate-input"] }, []],
+    [
       "addRule",
       "text under 10 characters",
       { text: "Short", severity: "warning" },
       []
+    ],
+    [
+      "addRule",
+      "a duplicate",
+      { text: "Custom rule number 1", severity: "warning" },
+      []
     ]
   ] as const)("%s with %s: refused at once", (tool, _case, input, said) => {
-    expect(refusedOnCallAlone(tool, input, said)).toBe(true);
+    expect(wouldBeRefused(tool, input, rules(), said)).toBe(true);
   });
 
   it.each([
@@ -553,24 +575,53 @@ describe("refusedOnCallAlone: no approval needed to refuse (D28)", () => {
       { ruleIds: ["no-secrets", "validate-input"], reason: REASON },
       SAID
     ],
-    ["removeRule", "a custom rule", { ruleIds: ["c_00000001"] }, []],
     [
       "removeRule",
-      "a custom-shaped ID that may exist",
-      { ruleIds: ["c_99999999"] },
+      "a custom rule that exists",
+      { ruleIds: ["c_00000001"] },
       []
     ],
-    ["restoreRule", "an unlocked rule", { ruleIds: ["validate-input"] }, []],
+    ["restoreRule", "a rule that's off", { ruleIds: ["explicit-errors"] }, []],
     [
       "addRule",
-      "text of a valid length",
+      "a new rule",
       { text: "Use the shared HTTP client", severity: "warning" },
       []
     ]
   ] as const)("%s with %s: waits for approval", (tool, _case, input, said) => {
-    expect(refusedOnCallAlone(tool, input, said)).toBe(false);
+    expect(wouldBeRefused(tool, input, rules(), said)).toBe(false);
+  });
+});
+
+describe("unapprovedRefusal: all an unapproved call can get (D30)", () => {
+  it("is the call's refusal when nothing in it would pass", () => {
+    const { tables } = memoryTables();
+    expect(
+      unapprovedRefusal(
+        "removeRule",
+        { ruleIds: ["no-secrets"] },
+        readRules(tables),
+        []
+      ).message
+    ).toBe(LOCKED_REFUSAL);
   });
 
+  it("says it wasn't approved when part of the call would now pass", () => {
+    const { tables } = memoryTables();
+    expect(
+      unapprovedRefusal(
+        "removeRule",
+        { ruleIds: ["no-secrets", "no-console-log"], reason: REASON },
+        readRules(tables),
+        SAID
+      ).message
+    ).toBe(
+      `${LOCKED_REFUSAL} This change wasn't approved, so nothing changed. Ask for it again to approve it.`
+    );
+  });
+});
+
+describe("refusals whatever the rules are (D28)", () => {
   it.each([
     [
       "a locked rule",
@@ -697,6 +748,57 @@ describe("removeRules and restoreRules: one call for many rules (D29)", () => {
     );
   });
 
+  it("names unknown IDs in one sentence, then the rules the call could change", () => {
+    const { tables, data } = memoryTables([customRule(1)]);
+    expectRefused(
+      data,
+      () =>
+        removeRules(
+          tables,
+          { ruleIds: ["rule1", "rule2"], reason: REASON },
+          NOW,
+          SAID
+        ),
+      "No rules with IDs `rule1`, `rule2` exist in this workspace. Rules you can switch off: validate-input, no-sensitive-logs, explicit-errors, no-console-log. Custom rules you can delete: c_00000001."
+    );
+  });
+
+  it("names one unknown ID the same way, and says when nothing can change", () => {
+    const off = [
+      "validate-input",
+      "no-sensitive-logs",
+      "explicit-errors",
+      "no-console-log"
+    ];
+    const { tables, data } = memoryTables(
+      [],
+      off.map((ruleId) => switchedOffRow(ruleId))
+    );
+    expectRefused(
+      data,
+      () => removeRules(tables, { ruleIds: ["rule1"] }, NOW, SAID),
+      "No rule with ID `rule1` exists in this workspace. No rule can be switched off or deleted right now."
+    );
+  });
+
+  it("names the rules that can be switched back on, for restoreRule", () => {
+    const { tables, data } = memoryTables(
+      [],
+      [switchedOffRow("validate-input")]
+    );
+    expectRefused(
+      data,
+      () => restoreRules(tables, { ruleIds: ["rule1"] }),
+      "No rule with ID `rule1` exists in this workspace. Rules you can switch back on: validate-input."
+    );
+    const none = memoryTables();
+    expectRefused(
+      none.data,
+      () => restoreRules(none.tables, { ruleIds: ["rule1"] }),
+      "No rule with ID `rule1` exists in this workspace. No rule is switched off."
+    );
+  });
+
   it("refuses a call that names no rule", () => {
     const { tables, data } = memoryTables();
     expectRefused(
@@ -766,7 +868,7 @@ describe("ruleChangePreview: the approval card (D28, D29)", () => {
   ];
 
   it.each(cases)(
-    "%s on %s: warns exactly when execute refuses",
+    "%s on %s: warns exactly when the change is refused",
     (tool, _case, input) => {
       const { tables } = memoryTables([], [switchedOffRow("validate-input")]);
       const preview = ruleChangePreview(tool, input, readRules(tables));
@@ -775,14 +877,16 @@ describe("ruleChangePreview: the approval card (D28, D29)", () => {
         if (tool === "addRule") {
           addRule(tables, input as { text: string; severity: "warning" }, NOW);
         } else if (tool === "removeRule") {
-          removeRules(
-            tables,
-            input as { ruleIds: string[]; reason?: string },
-            NOW,
-            SAID
-          );
+          // Per rule, as the card shows it: each rule's own message
+          const { ruleIds, reason } = input as {
+            ruleIds: string[];
+            reason?: string;
+          };
+          removeRule(tables, { ruleId: ruleIds[0], reason }, NOW);
         } else {
-          restoreRules(tables, input as { ruleIds: string[] });
+          restoreRule(tables, {
+            ruleId: (input as { ruleIds: string[] }).ruleIds[0]
+          });
         }
       } catch (error) {
         refused = (error as Error).message;
@@ -828,6 +932,110 @@ describe("ruleChangePreview: the approval card (D28, D29)", () => {
     const { tables } = memoryTables();
     expect(ruleChangePreview("listRules", {}, readRules(tables))).toEqual({
       refusals: [],
+      allRefused: false
+    });
+  });
+});
+
+describe("addRules: one call for many new rules (D32)", () => {
+  const rule = (text: string) => ({ text, severity: "warning" as const });
+  const DUPLICATE = "A rule with this text already exists.";
+
+  it("adds each rule and reports it, with the rules after", () => {
+    const { tables } = memoryTables();
+    const report = addRules(
+      tables,
+      { rules: [rule("Random rule number 1"), rule("Random rule number 2")] },
+      NOW
+    );
+    expect(report.added.map((added) => added.text)).toEqual([
+      "Random rule number 1",
+      "Random rule number 2"
+    ]);
+    expect(report.refused).toEqual([]);
+    expect(report.rules.active).toHaveLength(STARTER_PACK.length + 2);
+  });
+
+  it("refuses a copy of an existing rule, and a second copy within the call", () => {
+    const { tables } = memoryTables([customRule(1)]);
+    const report = addRules(
+      tables,
+      {
+        rules: [
+          rule("Custom rule number 1"),
+          rule("Random rule number 2"),
+          rule("random rule   NUMBER 2")
+        ]
+      },
+      NOW
+    );
+    expect(report.added.map((added) => added.text)).toEqual([
+      "Random rule number 2"
+    ]);
+    expect(report.refused).toEqual([
+      { text: "Custom rule number 1", message: DUPLICATE },
+      { text: "random rule NUMBER 2", message: DUPLICATE }
+    ]);
+  });
+
+  it("adds up to the 50-rule cap and refuses the rest", () => {
+    const { tables } = memoryTables(fillToLimit().slice(1));
+    const report = addRules(
+      tables,
+      { rules: [rule("Random rule number 1"), rule("Random rule number 2")] },
+      NOW
+    );
+    expect(report.added).toHaveLength(1);
+    expect(report.refused).toEqual([
+      {
+        text: "Random rule number 2",
+        message: "This workspace has 50 rules, the maximum. Remove one first."
+      }
+    ]);
+  });
+
+  it("fails with each distinct refusal, and changes nothing, when no rule is added", () => {
+    const { tables, data } = memoryTables([customRule(1), customRule(2)]);
+    expectRefused(
+      data,
+      () =>
+        addRules(
+          tables,
+          {
+            rules: [rule("Custom rule number 1"), rule("Custom rule number 2")]
+          },
+          NOW
+        ),
+      DUPLICATE
+    );
+  });
+
+  it("reads a call still pending from before addRule took a list", () => {
+    expect(
+      rulesToAdd({ text: "Random rule number 1", severity: "error" })
+    ).toEqual([{ text: "Random rule number 1", severity: "error" }]);
+    expect(rulesToAdd({})).toEqual([]);
+  });
+
+  it("predicts the refusals for the approval check and the card", () => {
+    const rules = readRules(memoryTables([customRule(1)]).tables);
+    const allCopies = { rules: [rule("Custom rule number 1")] };
+    const oneNew = {
+      rules: [rule("Custom rule number 1"), rule("Random rule number 2")]
+    };
+    // Two copies of a new text: the first would be added
+    const twice = {
+      rules: [rule("Random rule number 2"), rule("Random rule number 2")]
+    };
+    expect(wouldBeRefused("addRule", allCopies, rules, [])).toBe(true);
+    expect(wouldBeRefused("addRule", oneNew, rules, [])).toBe(false);
+    expect(wouldBeRefused("addRule", twice, rules, [])).toBe(false);
+    expect(ruleChangePreview("addRule", oneNew, rules)).toEqual({
+      refusals: [DUPLICATE],
+      allRefused: false
+    });
+    expect(ruleChangePreview("addRule", twice, rules)).toEqual({
+      refusals: [DUPLICATE],
       allRefused: false
     });
   });

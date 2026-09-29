@@ -222,6 +222,7 @@ One entry per design decision: what was decided, the options, and why. Newest la
 
 ## D28 - A call refused on its arguments skips approval, and a refusal gets one step with no tools
 
+- **Status:** Partly superseded by D30 and D33.
 - **Context:** In a live workspace, "disable all rules" switched off the four unlocked rules, then the model alternated `removeRule(no-secrets)`, refused as locked, and `removeRule(validate-input)`, refused as already off. Every call waited for approval, and each approval started a new turn, so the 5-step limit never stopped it. A person approved 8 calls, each with the model-invented reason "No reason", and the loop used over 10% of the day's chat budget. Locally, the same request got a reason the user never gave, "This rule is not necessary for our project", which a person approved 4 times.
 - **Options:** (a) keep approving every call and rely on the prompt; (b) end a turn right after a failed tool call; (c) refuse without approval any call whose refusal can't depend on workspace state, and give the step after a refused or rejected call no tools.
 - **Decision:** (c).
@@ -234,6 +235,7 @@ One entry per design decision: what was decided, the options, and why. Newest la
 
 ## D29 - removeRule and restoreRule take a list of rules
 
+- **Status:** Partly superseded by D33.
 - **Context:** In the live workspace, switching off four rules took 4 approvals, 4 turns and about 8 model calls, a `listRules` and a `removeRule` for each rule: roughly 280 neurons at the measured 30-40 per call. Every step re-sends every tool definition, so a separate batch tool would cost tokens on every call.
 - **Options:** (a) keep one rule per call; (b) add separate batch tools; (c) give `removeRule` and `restoreRule` `ruleIds: string[]`, with one shared reason.
 - **Decision:** (c).
@@ -246,3 +248,52 @@ One entry per design decision: what was decided, the options, and why. Newest la
   - A call pending from before, with one `ruleId`, is read as a list of one.
 - **Why:** One approval for a set is what someone means by "switch these off". Applying a subset of what was approved never goes past what they agreed to. Extending the existing tools adds no tool definitions. Returning the rules after the change removes the `listRules` step between changes.
 - **Consequences:** Measured live: two switch-offs took one approval and one call, with no `listRules`. One reason covers every recommended rule in the call; different reasons need separate calls. A rule refused in a batch is reported, not retried. Restoring near the 50-rule cap can refuse later rules in the list. Results are a little longer.
+
+## D30 - Only an approved execute writes, so a call that would be refused never asks
+
+- **Context:** D28 skipped approval only for refusals that can't depend on SQLite. With `needsApproval` false, `execute` runs unapproved, and the rules can change in between. Every other refusal still showed a card with Approve disabled, such as adding a duplicate "Random rule 2". A live "Remove all unlocked rules" also got invented IDs, and a reply after the refusal that promised work the model couldn't do.
+- **Options:** (a) keep D28; (b) pass a rules version from the check to `execute`; (c) make an unapproved `execute` unable to write, then refuse every predicted refusal at once.
+- **Decision:** (c).
+  - `needsApproval` returns false when every change in the call would be refused on the rules as they are, SQLite refusals included.
+  - `execute` writes only if both hold: the latest assistant message has this call ID's approval request, approved in the tool messages right after it with nothing newer; and the call isn't in the server's SQLite record of calls let through unasked. Otherwise it only refuses, even if the call would now pass: "This change wasn't approved, so nothing changed. Ask for it again to approve it."
+  - A call approved in the latest turn keeps needing approval, because the `ai` package rechecks approved calls and turns false into a denial.
+  - The prompt says never to guess rule IDs, and to call `listRules` before changing rules.
+  - A call that names unknown IDs is told which rules it could have named.
+  - The step after a refusal or rejection gets the system text "You can't call tools in this reply. Explain what happened and what the user can do next. Don't promise to do anything."
+- **Why:** D28's race only matters if an unapproved `execute` can write. Stopping that at the point of writing lets every refusal skip the card. Looking only at the latest assistant message stops an earlier approval from authorising a call that reuses its ID; Workers AI tool-call IDs may repeat. The server's record covers calls let through unasked, so neither the messages nor the prediction alone can allow a write.
+- **Consequences:** D28 is partly superseded, and the invariant is now "Rules change only inside an approved execute; a call that would be refused is refused at once without asking." A change that becomes possible between the check and `execute` is refused, and the user asks again. A reused ID in the latest turn asks for approval. Marks expire after a day. An approval pending from before D29 can be rejected; approving it errors with nothing written. Measured live in fresh sessions: approved changes write; duplicates and locked rules are refused with no card; unknown IDs are listed; the model still guessed an ID despite the prompt.
+
+## D31 - Rule tools list the IDs they can change in their schemas
+
+- **Context:** Even with a prompt telling it never to guess, Llama 3.3 named rules that don't exist ("all unlocked rules", `rule1` to `rule10`), in fresh sessions too. An error listing the real IDs came too late, because the next step has no tools.
+- **Options:** (a) list the current IDs in the tool description; (b) keep the tools for the step after an unknown-ID refusal; (c) make the allowed IDs part of the schema.
+- **Decision:** (c).
+  - Rebuilt from SQLite each turn, `removeRule`'s `ruleIds` is an array of `z.enum` of the active rules that aren't locked, and `restoreRule`'s of the switched-off rules.
+  - A tool with nothing to change is left out of the turn.
+  - The IDs of approved calls the turn runs stay in its lists, since the `ai` package checks their input against this turn's schema.
+  - A call the schema rejects, or a call to a tool left out, gets the refusal our checks would give. The unknown-ID error stays as the fallback.
+- **Why:** The IDs are made by the server (starter IDs in code, custom IDs from UUIDs), so no user-written text enters the tool definitions. The model sees the real IDs at every step without calling `listRules`, and the package enforces the schema before our code runs.
+- **Consequences:** Measured live in a fresh session: one call with the four real IDs, one card, no `listRules`. A call naming a locked rule is rejected as a whole. The lists add a few tokens to each step. A tool left out can't be called that turn; a call to it gets "No rule can be switched off or deleted right now." or "No rule is switched off."
+
+## D32 - addRule takes a list, the current turn's tool calls stay visible, and a written-out call is replaced
+
+- **Context:** Live, "Add 10 random rules" added "Random rule 1" to "Random rule 4" with one call and one card each, then got "A rule with this text already exists.", then replied with `{"name": "addRule", "parameters": {"text": "Random rule 8", "severity": "error"}}` as text. The current turn's tool calls had been pruned from what the model sees (`before-last-2-messages`), so it couldn't see a rule it had just added, and added it again. In the step with no tools, Llama wrote its next call out as text.
+- **Options:** (a) prompt changes only; (b) stop pruning tool calls; (c) prune only earlier turns, give `addRule` a list, and replace a written-out call.
+- **Decision:** (c).
+  - `addRule` takes `rules: { text, severity }[]`, as D29 does for the other tools: one card for the set. Each rule is checked against the rules the earlier ones left, so a duplicate within the batch and the 50-rule cap are caught, and each is reported. A card pending from before shows its one rule, but approving it fails with nothing written, because the `ai` package checks the input against the new schema; the user asks again.
+  - The model sees every tool call since the user's latest message. Tool calls from earlier turns are pruned.
+  - In a step with no tools, a reply is replaced with "Nothing changed." and the latest refusals only if the whole reply parses as JSON into a call to one of the rule tools: `name` one of `listRules`, `addRule`, `removeRule`, `restoreRule`; `parameters` or `arguments` an object; optionally `"type": "function"`; no other field. Anything else is left as it is.
+- **Why:** One card is what "add 10 rules" means. The model needs this turn's results so it doesn't repeat a change. The replacement doesn't depend on the model following instructions, and parsing the whole reply, rather than matching text in it, means a normal reply that shows a call as a code example is never touched.
+- **Consequences:** Measured locally: one card listing 10 rules, all added on one approval. A long turn sends more tokens, bounded by 5 steps. The model no longer sees tool results from earlier turns, only its replies. A written-out call inside a code block, after a sentence, or as a list of calls isn't replaced and reaches the user as written.
+
+## D33 - The model may fix a refused call once before it explains
+
+- **Context:** Under D28 the step after any refusal had no tools. Locally, "Add 10 random rules" got ten rules named "Rule 1" to "Rule 10", refused as too short, and the turn ended with an explanation instead of longer rules; the user had to ask again. Since D30, a call that would be refused never shows a card, so a retry can't start a new turn by itself; only a call a person approves can.
+- **Options:** (a) keep D28's step with no tools; (b) keep tools after every refusal, bounded only by `stepCountIs(5)`; (c) keep tools for one retry, then the step with no tools.
+- **Decision:** (c).
+  - After a refused step (a failed call, a schema rejection, or a batch with a refused rule), the next step keeps its tools, with the system note "Your last call was refused. Read why. If you can fix the call, call the tool again with the fix. If the error says not to try again, or you need something from the user, don't call a tool: tell the user why in one sentence."
+  - Refused steps are counted since the user's latest message, approval continuations included. After the second, the next step has no tools and D28's note.
+  - A Reject always gets the step with no tools: a person said no, so the model doesn't ask again.
+  - The prompt line becomes "If a call is refused, read why: if you can fix the call, try once more; otherwise tell the user why in one sentence."
+- **Why:** Most refusals name their fix: longer text, the real IDs (in the error and the schema), dropping a duplicate. A retry that would be refused again is refused at once with no card (D30), and one that could pass waits for a person as usual. Counting across approval continuations bounds retries to one per user message, so D28's loop can't come back through approvals.
+- **Consequences:** A refused turn costs up to two extra model calls, about 60-80 neurons, instead of one. A model that repeats the same call wastes its retry, as the replays show. Refusals that need the user (a reason that isn't theirs, a locked rule) rely on the note and the error text to stop a retry; a retry anyway is refused at once and the next step explains. D29's "A rule refused in a batch is reported, not retried" no longer holds.

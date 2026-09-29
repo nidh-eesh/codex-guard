@@ -8,21 +8,31 @@ import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
 import {
   AFTER_REFUSAL_NOTE,
+  afterRefusal,
   chatStopWhen,
-  explainAfterRefusal,
-  lastCallRefused,
+  latestToolOutcome,
   MAX_CHAT_STEPS,
-  omitEmptyTools
+  noToolCallsAsText,
+  omitEmptyTools,
+  refusalsThisTurn,
+  RETRY_NOTE
 } from "./chat-turn";
-import { readRules, ruleChangePreview, type RuleTables } from "./rule-changes";
-import { ruleTools, toolErrorText } from "./rule-tools";
+import { readRules, type RuleTables } from "./rule-changes";
+import { ruleTools, toolErrorTexts } from "./rule-tools";
 import type { CustomRule, DisabledDefault } from "./rules";
+import { memoryUnapprovedCalls } from "./tool-approval";
 
 // A replay of the loop seen in a live workspace: asked to "disable all
 // rules", the model switched off the four unlocked rules, then alternated
 // removeRule(no-secrets) (locked) and removeRule(validate-input) (already
-// off), and every approval started a new turn. Now a refused call is never
-// retried: the next step has no tools, so the model explains in words (D28).
+// off), and every approval started a new turn. Now a call that would be
+// refused never asks (D30), the model may fix a refused call once (D33),
+// and after a second refusal the next step has no tools, so the model
+// explains in words (D28).
+
+const SYSTEM = "System prompt.";
+const RETRYING = `${SYSTEM}\n\n${RETRY_NOTE}`;
+const EXPLAINING = `${SYSTEM}\n\n${AFTER_REFUSAL_NOTE}`;
 
 const UNLOCKED = [
   "validate-input",
@@ -31,8 +41,11 @@ const UNLOCKED = [
   "no-console-log"
 ];
 
-function tablesWithOff(off: readonly string[]): RuleTables {
-  const custom: CustomRule[] = [];
+function tablesWithOff(
+  off: readonly string[],
+  seeded: readonly CustomRule[] = []
+): RuleTables {
+  const custom: CustomRule[] = [...seeded];
   let disabled: DisabledDefault[] = off.map((ruleId) => ({
     ruleId,
     reason: "Covered by our own linting",
@@ -73,7 +86,11 @@ const usage = {
  * The live model's habit: whenever it has tools, it calls removeRule,
  * cycling through `script`. With no tools, it can only answer in words.
  */
-function loopingModel(script: object[]) {
+function loopingModel(
+  script: object[],
+  toolName = "removeRule",
+  noToolsReply = "That change was refused."
+) {
   const offeredTools: boolean[] = [];
   const systems: string[] = [];
   const model = new MockLanguageModelV3({
@@ -88,7 +105,7 @@ function loopingModel(script: object[]) {
       offeredTools.push(hasTools);
       if (!hasTools) {
         return {
-          content: [{ type: "text", text: "That change was refused." }],
+          content: [{ type: "text", text: noToolsReply }],
           finishReason: { unified: "stop", raw: "stop" },
           usage,
           warnings: []
@@ -100,7 +117,7 @@ function loopingModel(script: object[]) {
           {
             type: "tool-call",
             toolCallId: `loop-${toolCalls}`,
-            toolName: "removeRule",
+            toolName,
             input: JSON.stringify(script[(toolCalls - 1) % script.length])
           }
         ],
@@ -117,27 +134,46 @@ function loopingModel(script: object[]) {
 async function turn(
   messages: ModelMessage[],
   script: object[],
-  off: readonly string[] = UNLOCKED
+  off: readonly string[] = UNLOCKED,
+  {
+    toolName = "removeRule",
+    noToolsReply = "That change was refused.",
+    custom = [] as CustomRule[],
+    // As the server passes them: the IDs of the approved calls this turn runs
+    pending = { removeRule: [] as string[], restoreRule: [] as string[] }
+  } = {}
 ) {
-  const tables = tablesWithOff(off);
+  const tables = tablesWithOff(off, custom);
   const before = readRules(tables);
   const onChange = vi.fn();
-  const tools = ruleTools(tables, onChange);
-  const { model, offeredTools, systems } = loopingModel(script);
+  const tools = ruleTools(tables, memoryUnapprovedCalls(), onChange, {
+    pending
+  });
+  const { model, offeredTools, systems } = loopingModel(
+    script,
+    toolName,
+    noToolsReply
+  );
   const result = streamText({
     model: wrapLanguageModel({
       model,
-      middleware: [simulateStreamingMiddleware(), omitEmptyTools]
+      middleware: [
+        simulateStreamingMiddleware(),
+        omitEmptyTools,
+        noToolCallsAsText
+      ]
     }),
-    system: "System prompt.",
+    system: SYSTEM,
     messages,
     tools,
     stopWhen: chatStopWhen<typeof tools>(),
-    prepareStep: explainAfterRefusal<typeof tools>("System prompt.")
+    prepareStep: afterRefusal<typeof tools>(SYSTEM)
   });
   const chunks: { type: string; errorText?: string; delta?: string }[] = [];
   const reader = result
-    .toUIMessageStream({ onError: toolErrorText })
+    .toUIMessageStream({
+      onError: toolErrorTexts(() => readRules(tables))
+    })
     .getReader();
   for (let next = await reader.read(); !next.done; next = await reader.read()) {
     chunks.push(next.value as (typeof chunks)[number]);
@@ -145,7 +181,10 @@ async function turn(
   return {
     offeredTools,
     systems,
-    toolCalls: chunks.filter((c) => c.type === "tool-input-available").length,
+    // A call the schema rejects streams as tool-input-error
+    toolCalls: chunks.filter(
+      (c) => c.type === "tool-input-available" || c.type === "tool-input-error"
+    ).length,
     errors: chunks
       .filter((c) => c.type === "tool-output-error")
       .map((c) => c.errorText),
@@ -165,7 +204,11 @@ const disableAll: ModelMessage[] = [
 ];
 
 /** The turn after a person answered an approval for `input`. */
-function afterApproval(input: object, approved: boolean): ModelMessage[] {
+function afterApproval(
+  input: object,
+  approved: boolean,
+  toolName = "removeRule"
+): ModelMessage[] {
   return [
     ...disableAll,
     {
@@ -174,7 +217,7 @@ function afterApproval(input: object, approved: boolean): ModelMessage[] {
         {
           type: "tool-call",
           toolCallId: "earlier-1",
-          toolName: "removeRule",
+          toolName,
           input
         },
         {
@@ -198,49 +241,186 @@ function afterApproval(input: object, approved: boolean): ModelMessage[] {
 }
 
 describe("the disable-all loop, replayed (D28)", () => {
-  it("refuses the locked rule without asking, then makes the model explain with no tools", async () => {
+  it("offers no removeRule once nothing can be removed, so the loop has nothing to call (D31)", async () => {
+    // The live loop's state: the four unlocked rules are off, only locked
+    // ones are on. The model calls removeRule anyway, and again when it may
+    // fix the call
     const run = await turn(disableAll, [LOCKED, ALREADY_OFF]);
-    // One tool call, then one step without tools, then the turn ends
-    expect(run.offeredTools).toEqual([true, false]);
-    expect(run.toolCalls).toBe(1);
+    // A call, one retry, then one step without tools, then the turn ends
+    expect(run.offeredTools).toEqual([true, true, false]);
+    expect(run.toolCalls).toBe(2);
     expect(run.askedForApproval).toBe(false);
-    expect(run.errors).toEqual([LOCKED_REFUSAL]);
+    expect(run.errors).toEqual([
+      "No rule can be switched off or deleted right now.",
+      "No rule can be switched off or deleted right now."
+    ]);
     expect(run.answer).toBe("That change was refused.");
     expect(run.rulesAfter).toEqual(run.rulesBefore);
     expect(run.onChange).not.toHaveBeenCalled();
-    // The no-tools step is told why, so it explains instead of writing out
-    // a tool call
-    expect(run.systems).toEqual([
-      "System prompt.",
-      `System prompt.\n\n${AFTER_REFUSAL_NOTE}`
-    ]);
+    // The retry is told to read the error; the no-tools step is told why it
+    // has no tools, so it explains instead of writing out a tool call
+    expect(run.systems).toEqual([SYSTEM, RETRYING, EXPLAINING]);
   });
 
-  it("asks a person before the change that depends on the rules, and the card warns it will be refused", async () => {
-    const run = await turn(disableAll, [ALREADY_OFF, LOCKED]);
-    expect(run.offeredTools).toEqual([true]);
-    expect(run.askedForApproval).toBe(true);
-    expect(run.errors).toEqual([]);
-    expect(
-      ruleChangePreview("removeRule", ALREADY_OFF, run.rulesBefore)
-    ).toEqual({
-      refusals: ["Rule `validate-input` is already switched off."],
-      allRefused: true
-    });
-  });
-
-  it("after an approved call is refused, gives the model no tools for its next step", async () => {
-    const run = await turn(afterApproval(ALREADY_OFF, true), [
-      LOCKED,
-      ALREADY_OFF
-    ]);
-    expect(run.offeredTools).toEqual([false]);
-    expect(run.toolCalls).toBe(0);
+  it("refuses switching off a rule that's already off at once, and makes the model explain after its retry (D30)", async () => {
+    // validate-input is off, so it's outside removeRule's list
+    const run = await turn(
+      disableAll,
+      [ALREADY_OFF, LOCKED],
+      ["validate-input"]
+    );
+    expect(run.offeredTools).toEqual([true, true, false]);
+    expect(run.askedForApproval).toBe(false);
     expect(run.errors).toEqual([
-      "Rule `validate-input` is already switched off."
+      "Rule `validate-input` is already switched off.",
+      LOCKED_REFUSAL
+    ]);
+    expect(run.rulesAfter).toEqual(run.rulesBefore);
+  });
+
+  it("refuses adding a duplicate straight away, with no card: the Random rule 2 chat (D30)", async () => {
+    // This model repeats the same call when it may fix it
+    const run = await turn(
+      [{ role: "user", content: "Add a warning rule: Random rule 2" }],
+      [{ rules: [{ text: "Random rule 2", severity: "warning" }] }],
+      [],
+      {
+        toolName: "addRule",
+        custom: [
+          {
+            id: "c_0000000a",
+            text: "Random rule 2",
+            severity: "warning",
+            createdAt: 1
+          }
+        ]
+      }
+    );
+    expect(run.askedForApproval).toBe(false);
+    expect(run.errors).toEqual([
+      "A rule with this text already exists.",
+      "A rule with this text already exists."
+    ]);
+    expect(run.offeredTools).toEqual([true, true, false]);
+    expect(run.rulesAfter).toEqual(run.rulesBefore);
+  });
+
+  it("lets the model fix a refused call, which then asks for approval: the 'Add 10 random rules' chat's first try (D33)", async () => {
+    // Seen locally: ten rules named "Rule 1" to "Rule 10", all too short.
+    // The model explained instead of writing longer ones
+    const tooShort = {
+      rules: Array.from({ length: 10 }, (_, i) => ({
+        text: `Rule ${i + 1}`,
+        severity: "warning"
+      }))
+    };
+    const sentences = {
+      rules: Array.from({ length: 10 }, (_, i) => ({
+        text: `Code quality rule number ${i + 1}`,
+        severity: "warning"
+      }))
+    };
+    const run = await turn(
+      [{ role: "user", content: "Add 10 random rules" }],
+      [tooShort, sentences],
+      [],
+      { toolName: "addRule" }
+    );
+    expect(run.errors).toEqual([
+      "Rule text must be between 10 and 200 characters."
+    ]);
+    // The retry keeps its tools and is told to read the error; the fixed
+    // call waits for a person, like any other
+    expect(run.offeredTools).toEqual([true, true]);
+    expect(run.systems).toEqual([SYSTEM, RETRYING]);
+    expect(run.askedForApproval).toBe(true);
+    expect(run.rulesAfter).toEqual(run.rulesBefore);
+  });
+
+  it("lists the real IDs when the model invents some, so its retry can use them: the 'Remove all unlocked rules' chat", async () => {
+    // Seen live: invented IDs rule1 to rule10, with an invented reason. The
+    // retry names the real rules, but its reason is still made up
+    const invented = {
+      ruleIds: Array.from({ length: 10 }, (_, i) => `rule${i + 1}`),
+      reason: "no reason provided"
+    };
+    const realIds = { ruleIds: UNLOCKED, reason: "no reason provided" };
+    const run = await turn(
+      [{ role: "user", content: "Remove all unlocked rules" }],
+      [invented, realIds],
+      []
+    );
+    expect(run.askedForApproval).toBe(false);
+    const ids = invented.ruleIds.map((id) => `\`${id}\``).join(", ");
+    expect(run.errors[0]).toBe(
+      `No rules with IDs ${ids} exist in this workspace. Rules you can switch off: validate-input, no-sensitive-logs, explicit-errors, no-console-log.`
+    );
+    expect(run.errors[1]).toContain(
+      "The reason must say why the team is switching this rule off"
+    );
+    // The no-tools step gets its own system text after the usual prompt
+    expect(run.offeredTools).toEqual([true, true, false]);
+    expect(run.systems[2]).toBe(
+      "System prompt.\n\nYou can't call tools in this reply. Explain what happened and what the user can do next. Don't promise to do anything."
+    );
+    expect(run.rulesAfter).toEqual(run.rulesBefore);
+  });
+
+  it("after an approved call is refused, lets the model fix it once, then makes it explain", async () => {
+    const run = await turn(
+      afterApproval(ALREADY_OFF, true),
+      [LOCKED, ALREADY_OFF],
+      UNLOCKED,
+      { pending: { removeRule: ALREADY_OFF.ruleIds, restoreRule: [] } }
+    );
+    expect(run.offeredTools).toEqual([true, false]);
+    expect(run.toolCalls).toBe(1);
+    expect(run.errors).toEqual([
+      "Rule `validate-input` is already switched off.",
+      LOCKED_REFUSAL
     ]);
     expect(run.answer).toBe("That change was refused.");
     expect(run.rulesAfter).toEqual(run.rulesBefore);
+  });
+
+  it("counts a refusal from before the approval, so the retry isn't reset by it (D33)", async () => {
+    // The turn so far: a refused call, then a call a person approved. Both
+    // answer the same user message, so the approved call's refusal is the
+    // turn's second
+    const [said, ...approval] = afterApproval(ALREADY_OFF, true);
+    const refusedEarlier: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "first-1",
+            toolName: "removeRule",
+            input: LOCKED
+          }
+        ]
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "first-1",
+            toolName: "removeRule",
+            output: { type: "error-text", value: LOCKED_REFUSAL }
+          }
+        ]
+      }
+    ];
+    const run = await turn(
+      [said, ...refusedEarlier, ...approval],
+      [LOCKED],
+      UNLOCKED,
+      { pending: { removeRule: ALREADY_OFF.ruleIds, restoreRule: [] } }
+    );
+    expect(run.offeredTools).toEqual([false]);
+    expect(run.systems).toEqual([EXPLAINING]);
+    expect(run.toolCalls).toBe(0);
   });
 
   it("after a person rejects a call, gives the model no tools for its next step", async () => {
@@ -249,6 +429,7 @@ describe("the disable-all loop, replayed (D28)", () => {
       LOCKED
     ]);
     expect(run.offeredTools).toEqual([false]);
+    expect(run.systems).toEqual([EXPLAINING]);
     expect(run.toolCalls).toBe(0);
     expect(run.askedForApproval).toBe(false);
   });
@@ -259,9 +440,10 @@ describe("the disable-all loop, replayed (D28)", () => {
       [MADE_UP_REASON],
       []
     );
-    expect(run.offeredTools).toEqual([true, false]);
+    expect(run.offeredTools).toEqual([true, true, false]);
     expect(run.askedForApproval).toBe(false);
     expect(run.errors).toEqual([
+      "The reason must say why the team is switching this rule off, in at least 10 characters.",
       "The reason must say why the team is switching this rule off, in at least 10 characters."
     ]);
     expect(run.rulesAfter).toEqual(run.rulesBefore);
@@ -279,42 +461,100 @@ describe("the disable-all loop, replayed (D28)", () => {
       [invented],
       []
     );
-    expect(run.offeredTools).toEqual([true, false]);
+    expect(run.offeredTools).toEqual([true, true, false]);
     expect(run.askedForApproval).toBe(false);
-    expect(run.errors).toHaveLength(1);
-    expect(run.errors[0]).toContain(
-      "The reason must be in the user's own words"
-    );
+    expect(run.errors).toHaveLength(2);
+    for (const error of run.errors) {
+      expect(error).toContain("The reason must be in the user's own words");
+    }
     expect(run.rulesAfter).toEqual(run.rulesBefore);
   });
 
-  it("switches off every unlocked rule with one approval, then explains the locked ones (D29)", async () => {
+  it("rejects a call naming locked rules as a whole, before any of our code runs (D31)", async () => {
     const everyRule = {
       ruleIds: [...UNLOCKED, "no-secrets", "sql-parameterized"],
       reason: REASON
     };
-    // The turn that asks: one call for all six rules, one approval
-    const asking = await turn(disableAll, [everyRule], []);
+    const run = await turn(disableAll, [everyRule], []);
+    expect(run.askedForApproval).toBe(false);
+    const refusal = `${LOCKED_REFUSAL} Rule \`sql-parameterized\` is locked and can't be switched off. Locked rules can't be changed; don't try again.`;
+    expect(run.errors).toEqual([refusal, refusal]);
+    expect(run.offeredTools).toEqual([true, true, false]);
+    expect(run.rulesAfter).toEqual(run.rulesBefore);
+  });
+
+  it("switches off the four unlocked rules with one approval (D29, D31)", async () => {
+    const fourRules = { ruleIds: UNLOCKED, reason: REASON };
+    // The turn that asks: one call for all four rules, one approval
+    const asking = await turn(disableAll, [fourRules], []);
     expect(asking.offeredTools).toEqual([true]);
     expect(asking.askedForApproval).toBe(true);
-    // The turn after the approval: four switched off, two refused as
-    // locked, and the model explains with no tools
+    // The turn after the approval: all four switched off
     const approved = await turn(
-      afterApproval(everyRule, true),
-      [everyRule],
-      []
+      afterApproval(fourRules, true),
+      [fourRules],
+      [],
+      {
+        pending: { removeRule: UNLOCKED, restoreRule: [] }
+      }
     );
-    expect(approved.offeredTools).toEqual([false]);
-    expect(approved.toolCalls).toBe(0);
-    expect(approved.askedForApproval).toBe(false);
     expect(approved.rulesAfter.switchedOff.map((rule) => rule.id)).toEqual(
       UNLOCKED
     );
     expect(approved.onChange).toHaveBeenCalledTimes(1);
   });
 
+  it("adds ten rules with one call and one approval: the 'Add 10 random rules' chat (D32)", async () => {
+    const tenRules = {
+      rules: Array.from({ length: 10 }, (_, i) => ({
+        text: `Random rule ${i + 1}`,
+        severity: i % 2 === 0 ? "error" : "warning"
+      }))
+    };
+    const said: ModelMessage[] = [
+      { role: "user", content: "Add 10 random rules" }
+    ];
+    // The turn that asks: one call for all ten, one card
+    const asking = await turn(said, [tenRules], [], { toolName: "addRule" });
+    expect(asking.offeredTools).toEqual([true]);
+    expect(asking.toolCalls).toBe(1);
+    expect(asking.askedForApproval).toBe(true);
+    // After the approval all ten are added. This model then tries the same
+    // call again, twice, as the live one did with rule 2: refused at once,
+    // no card, and its written-out tool call never reaches the user
+    const approved = await turn(
+      [
+        ...said.slice(0, 1),
+        ...afterApproval(tenRules, true, "addRule").slice(1)
+      ],
+      [tenRules],
+      [],
+      {
+        toolName: "addRule",
+        noToolsReply:
+          '{"name": "addRule", "parameters": {"text": "Random rule 8", "severity": "error"}}'
+      }
+    );
+    expect(
+      approved.rulesAfter.active.filter((rule) => rule.source === "custom")
+    ).toHaveLength(10);
+    expect(approved.onChange).toHaveBeenCalledTimes(1);
+    expect(approved.askedForApproval).toBe(false);
+    expect(approved.errors).toEqual([
+      "A rule with this text already exists.",
+      "A rule with this text already exists."
+    ]);
+    expect(approved.answer).toBe(
+      "Nothing changed. A rule with this text already exists."
+    );
+  });
+
   it(`still stops at ${MAX_CHAT_STEPS} steps when every call succeeds`, async () => {
-    const tools = ruleTools(tablesWithOff([]), () => {});
+    const tools = ruleTools(
+      tablesWithOff([]),
+      memoryUnapprovedCalls(),
+      () => {}
+    );
     let calls = 0;
     const model = new MockLanguageModelV3({
       doGenerate: async () => {
@@ -342,14 +582,14 @@ describe("the disable-all loop, replayed (D28)", () => {
       prompt: "Which rules are on?",
       tools,
       stopWhen: chatStopWhen<typeof tools>(),
-      prepareStep: explainAfterRefusal<typeof tools>("System prompt.")
+      prepareStep: afterRefusal<typeof tools>(SYSTEM)
     });
     await result.consumeStream();
     expect(calls).toBe(MAX_CHAT_STEPS);
   });
 });
 
-describe("lastCallRefused", () => {
+describe("latestToolOutcome and refusalsThisTurn", () => {
   const toolMessage = (output: {
     type: string;
     value?: unknown;
@@ -365,19 +605,36 @@ describe("lastCallRefused", () => {
         }
       ]
     }) as ModelMessage;
+  const refused = toolMessage({ type: "error-text", value: "Refused." });
+  const succeeded = toolMessage({ type: "json", value: { ok: true } });
+  const call: ModelMessage = { role: "assistant", content: "(a tool call)" };
 
-  it("is true after a failed call or a rejected one", () => {
-    expect(
-      lastCallRefused([toolMessage({ type: "error-text", value: "Refused." })])
-    ).toBe(true);
-    expect(lastCallRefused([toolMessage({ type: "execution-denied" })])).toBe(
-      true
+  it("is refused after a failed call, and rejected after a person's Reject", () => {
+    expect(latestToolOutcome([refused])).toBe("refused");
+    expect(latestToolOutcome([toolMessage({ type: "execution-denied" })])).toBe(
+      "rejected"
     );
   });
 
-  it("is true after a batch change that refused any of its rules (D29)", () => {
+  it("is rejected when a step's results hold both a Reject and a refusal", () => {
+    const both = {
+      role: "tool",
+      content: [
+        ...(refused.content as object[]),
+        {
+          type: "tool-result",
+          toolCallId: "c2",
+          toolName: "addRule",
+          output: { type: "execution-denied" }
+        }
+      ]
+    } as ModelMessage;
+    expect(latestToolOutcome([both])).toBe("rejected");
+  });
+
+  it("is refused after a batch change that refused any of its rules (D29)", () => {
     expect(
-      lastCallRefused([
+      latestToolOutcome([
         toolMessage({
           type: "json",
           value: {
@@ -386,28 +643,50 @@ describe("lastCallRefused", () => {
           }
         })
       ])
-    ).toBe(true);
+    ).toBe("refused");
     expect(
-      lastCallRefused([
+      latestToolOutcome([
         toolMessage({
           type: "json",
           value: { switchedOff: ["validate-input"], refused: [] }
         })
       ])
-    ).toBe(false);
+    ).toBeUndefined();
   });
 
-  it("is false after a successful call, or when the last message isn't a tool result", () => {
+  it("is undefined after a successful call, or when the last message isn't a tool result", () => {
+    expect(latestToolOutcome([succeeded])).toBeUndefined();
     expect(
-      lastCallRefused([toolMessage({ type: "json", value: { ok: true } })])
-    ).toBe(false);
-    expect(
-      lastCallRefused([
-        toolMessage({ type: "error-text", value: "Refused." }),
+      latestToolOutcome([
+        refused,
         { role: "assistant", content: "Sorry, that was refused." }
       ])
-    ).toBe(false);
-    expect(lastCallRefused([])).toBe(false);
+    ).toBeUndefined();
+    expect(latestToolOutcome([])).toBeUndefined();
+  });
+
+  it("counts refused steps since the user's latest message only", () => {
+    const earlierTurn = [
+      { role: "user", content: "Switch it off" } as ModelMessage,
+      call,
+      refused
+    ];
+    expect(refusalsThisTurn([])).toBe(0);
+    expect(
+      refusalsThisTurn([...earlierTurn, { role: "user", content: "Again" }])
+    ).toBe(0);
+    expect(
+      refusalsThisTurn([
+        ...earlierTurn,
+        { role: "user", content: "Again" },
+        call,
+        refused,
+        call,
+        succeeded,
+        call,
+        refused
+      ])
+    ).toBe(2);
   });
 });
 
