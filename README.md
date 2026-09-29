@@ -1,5 +1,7 @@
 # Codex Guard
 
+**[Live demo](https://codexguard.nidheesh.me)**
+
 A guardrail agent for engineering teams, built on Cloudflare. Paste a diff and get feedback on whether it follows your workspace's rules.
 
 - **Review a diff:** paste the output of `git diff` into the review box. Llama 3.3 on Workers AI checks it against the workspace's active rules and returns a verdict (pass, fail or incomplete) with each finding's rule, file and line.

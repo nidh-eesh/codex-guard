@@ -286,3 +286,9 @@ Write D27 and the section 2 line, update the tests, and give me the commit messa
 ````text
 Rate limiter IDs 1001 and 1002 are free. Go ahead and deploy, then run the smoke test against the URL.
 ````
+
+### 2026-09-29 01:17 UTC
+
+````text
+Add a "Live demo" link to https://codexguard.nidheesh.me at the top of the README, fill in DESIGN Section 1's "Where in the code" column with the real files and classes, and fix the header overflow at phone widths. Give me commit messages, and ask before redeploying: the header fix needs a deploy.
+````
