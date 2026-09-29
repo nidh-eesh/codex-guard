@@ -292,3 +292,9 @@ Rate limiter IDs 1001 and 1002 are free. Go ahead and deploy, then run the smoke
 ````text
 Add a "Live demo" link to https://codexguard.nidheesh.me at the top of the README, fill in DESIGN Section 1's "Where in the code" column with the real files and classes, and fix the header overflow at phone widths. Give me commit messages, and ask before redeploying: the header fix needs a deploy.
 ````
+
+### 2026-09-29 02:05 UTC
+
+````text
+Run the redeploy now. The change to move the domain to cloudflare has now completed. Update the wrangler.jsonc
+````

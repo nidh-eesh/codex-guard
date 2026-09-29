@@ -8,6 +8,8 @@
   // Off: invocation logs record request URLs, and the SDK's error logs include
   // instance names; both contain workspace IDs, which are never logged
   "observability": { "enabled": false },
+  "routes": [{ "pattern": "codexguard.nidheesh.me", "custom_domain": true }],
+  "workers_dev": true,
   "assets": {
     "directory": "./public",
     "not_found_handling": "single-page-application",
