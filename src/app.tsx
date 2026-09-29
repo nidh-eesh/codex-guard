@@ -565,26 +565,30 @@ function Chat({ workspaceId }: { workspaceId: string }) {
   return (
     <div className="flex flex-col h-screen bg-kumo-elevated">
       {/* Header */}
-      <header className="px-5 py-4 bg-kumo-base border-b border-kumo-line">
-        <div className="max-w-3xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <h1 className="flex items-center gap-2 text-lg font-semibold text-kumo-default">
+      {/* On phones: labels go screen-reader-only, the debug switch is
+          hidden, and the rules panel spans the header */}
+      <header className="relative px-3 py-4 sm:px-5 bg-kumo-base border-b border-kumo-line">
+        <div className="max-w-3xl mx-auto flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-3">
+            <h1 className="flex items-center gap-1.5 whitespace-nowrap text-base font-semibold text-kumo-default sm:gap-2 sm:text-lg">
               <ShieldCheckIcon size={20} weight="bold" />
               Codex Guard
             </h1>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5 sm:gap-3">
             <div className="flex items-center gap-1.5">
               <CircleIcon
                 size={8}
                 weight="fill"
                 className={connected ? "text-kumo-success" : "text-kumo-danger"}
               />
-              <Text size="xs" variant="secondary">
-                {connected ? "Connected" : "Disconnected"}
-              </Text>
+              <span className="sr-only sm:not-sr-only">
+                <Text size="xs" variant="secondary">
+                  {connected ? "Connected" : "Disconnected"}
+                </Text>
+              </span>
             </div>
-            <div className="flex items-center gap-1.5">
+            <div className="hidden items-center gap-1.5 sm:flex">
               <BugIcon size={14} className="text-kumo-inactive" />
               <Switch
                 checked={showDebug}
@@ -594,22 +598,22 @@ function Chat({ workspaceId }: { workspaceId: string }) {
               />
             </div>
             <ThemeToggle />
-            <div className="relative" ref={rulesPanelRef}>
+            <div className="sm:relative" ref={rulesPanelRef}>
               <Button
                 variant="secondary"
                 icon={<ListChecksIcon size={16} />}
                 onClick={() => setShowRules(!showRules)}
                 disabled={!rules}
               >
-                Rules
+                <span className="sr-only sm:not-sr-only">Rules</span>
                 {rules && (
-                  <Badge variant="secondary" className="ml-1.5">
+                  <Badge variant="secondary" className="sm:ml-1.5">
                     {rules.active.length}
                   </Badge>
                 )}
               </Button>
               {showRules && rules && (
-                <div className="absolute right-0 top-full mt-2 w-96 z-50 max-h-[70vh] overflow-y-auto rounded-xl bg-kumo-base ring ring-kumo-line shadow-lg p-4">
+                <div className="absolute inset-x-3 top-full mt-2 z-50 max-h-[70vh] overflow-y-auto rounded-xl bg-kumo-base ring ring-kumo-line shadow-lg p-4 sm:inset-x-auto sm:right-0 sm:w-96">
                   <RulesPanel rules={rules} />
                 </div>
               )}
@@ -619,7 +623,7 @@ function Chat({ workspaceId }: { workspaceId: string }) {
               icon={<TrashIcon size={16} />}
               onClick={clearHistory}
             >
-              Clear
+              <span className="sr-only sm:not-sr-only">Clear</span>
             </Button>
           </div>
         </div>
