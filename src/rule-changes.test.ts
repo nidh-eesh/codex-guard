@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   addRule,
+  argumentRefusal,
   newCustomRuleId,
   readRules,
   removeRule,
   restoreRule,
   RuleError,
+  ruleChangeRefusal,
   type RuleTables
 } from "./rule-changes";
 import { STARTER_PACK, type CustomRule, type DisabledDefault } from "./rules";
@@ -248,7 +250,7 @@ describe("removeRule", () => {
       expectRefused(
         data,
         () => removeRule(tables, { ruleId, reason: "We need to" }, NOW),
-        `Rule \`${ruleId}\` is locked and can't be switched off.`
+        `Rule \`${ruleId}\` is locked and can't be switched off. Locked rules can't be changed; don't try again.`
       );
     }
   );
@@ -258,7 +260,7 @@ describe("removeRule", () => {
     expectRefused(
       data,
       () => removeRule(tables, { ruleId: "no-secrets", reason: "Again" }, NOW),
-      "Rule `no-secrets` is locked and can't be switched off."
+      "Rule `no-secrets` is locked and can't be switched off. Locked rules can't be changed; don't try again."
     );
   });
 
@@ -287,6 +289,39 @@ describe("removeRule", () => {
     );
   });
 
+  it.each([
+    ["a made-up placeholder", "No reason"],
+    ["a placeholder in other case and punctuation", "NOT NEEDED."],
+    ["a placeholder the model might claim for the user", "User requested"],
+    ["a reason under 10 characters", "Too noisy"]
+  ])("refuses %s as a reason (D28)", (_case, reason) => {
+    const { tables, data } = memoryTables();
+    expectRefused(
+      data,
+      () => removeRule(tables, { ruleId: "validate-input", reason }, NOW),
+      "The reason must say why the team is switching this rule off, in at least 10 characters."
+    );
+  });
+
+  it("accepts a real reason of exactly 10 characters", () => {
+    const { tables } = memoryTables();
+    expect(
+      removeRule(
+        tables,
+        { ruleId: "no-console-log", reason: "Too noisy!" },
+        NOW
+      )
+    ).toMatchObject({ kind: "switchedOff", reason: "Too noisy!" });
+  });
+
+  it("accepts a reason that only starts like a placeholder", () => {
+    const { tables } = memoryTables();
+    const reason = "No reason to keep it: our logger replaces console.log";
+    expect(
+      removeRule(tables, { ruleId: "no-console-log", reason }, NOW)
+    ).toMatchObject({ kind: "switchedOff", reason });
+  });
+
   it("refuses a reason over 200 characters", () => {
     const { tables, data } = memoryTables();
     expectRefused(
@@ -312,7 +347,11 @@ describe("removeRule", () => {
     expectRefused(
       data,
       () =>
-        removeRule(tables, { ruleId: "validate-input", reason: "Twice" }, NOW),
+        removeRule(
+          tables,
+          { ruleId: "validate-input", reason: "Covered by our own linting" },
+          NOW
+        ),
       "Rule `validate-input` is already switched off."
     );
   });
@@ -333,10 +372,18 @@ describe("restoreRule", () => {
     );
   });
 
+  it("refuses a locked rule as locked, even with a stale row (D28)", () => {
+    const { tables, data } = memoryTables([], [switchedOffRow("no-secrets")]);
+    expectRefused(
+      data,
+      () => restoreRule(tables, { ruleId: "no-secrets" }),
+      "Rule `no-secrets` is locked and always on. Locked rules can't be changed; don't try again."
+    );
+  });
+
   it.each([
     ["a recommended rule that is on", "validate-input"],
-    ["a custom rule", "c_00000001"],
-    ["a locked rule, even with a stale row", "no-secrets"]
+    ["a custom rule", "c_00000001"]
   ])("refuses %s as not switched off", (_case, ruleId) => {
     const { tables, data } = memoryTables(
       [customRule(1)],
@@ -385,4 +432,177 @@ describe("restoreRule", () => {
       "This workspace has 50 rules, the maximum. Remove one first."
     );
   });
+});
+
+describe("ruleChangeRefusal: the approval card's warning (D28)", () => {
+  // The card must warn exactly when execute would refuse, with its message
+  const cases: [string, string, Record<string, unknown>][] = [
+    [
+      "removeRule",
+      "a locked rule",
+      { ruleId: "no-secrets", reason: "We need it off" }
+    ],
+    [
+      "removeRule",
+      "a rule already off",
+      { ruleId: "validate-input", reason: "Covered elsewhere" }
+    ],
+    ["removeRule", "an unknown rule", { ruleId: "no-such-rule" }],
+    [
+      "removeRule",
+      "a made-up reason",
+      { ruleId: "no-console-log", reason: "No reason" }
+    ],
+    [
+      "removeRule",
+      "a real reason",
+      { ruleId: "no-console-log", reason: "Our logger replaces it" }
+    ],
+    ["restoreRule", "a rule that's on", { ruleId: "no-console-log" }],
+    ["restoreRule", "a rule that's off", { ruleId: "validate-input" }],
+    ["addRule", "text too short", { text: "Short", severity: "warning" }],
+    [
+      "addRule",
+      "a duplicate",
+      { text: "Validate external input at the boundary", severity: "error" }
+    ],
+    [
+      "addRule",
+      "a new rule",
+      { text: "Use the shared HTTP client", severity: "warning" }
+    ]
+  ];
+
+  it.each(cases)(
+    "%s on %s: warns exactly when execute refuses",
+    (tool, _case, input) => {
+      const { tables } = memoryTables([], [switchedOffRow("validate-input")]);
+      const warning = ruleChangeRefusal(tool, input, readRules(tables));
+      let refused: string | undefined;
+      try {
+        if (tool === "addRule") {
+          addRule(tables, input as { text: string; severity: "warning" }, NOW);
+        } else if (tool === "removeRule") {
+          removeRule(tables, input as { ruleId: string; reason?: string }, NOW);
+        } else {
+          restoreRule(tables, input as { ruleId: string });
+        }
+      } catch (error) {
+        refused = (error as Error).message;
+      }
+      expect(warning).toBe(refused);
+    }
+  );
+
+  it("gives no warning for a tool that doesn't change rules", () => {
+    const { tables } = memoryTables();
+    expect(
+      ruleChangeRefusal("listRules", {}, readRules(tables))
+    ).toBeUndefined();
+  });
+});
+
+describe("argumentRefusal: refused without approval (D28)", () => {
+  // Refusals that can't depend on the rules in SQLite
+  const refused: [string, string, Record<string, unknown>, string][] = [
+    [
+      "removeRule",
+      "a locked rule",
+      { ruleId: "no-secrets", reason: "Covered by our own linting" },
+      "Rule `no-secrets` is locked and can't be switched off. Locked rules can't be changed; don't try again."
+    ],
+    [
+      "restoreRule",
+      "a locked rule",
+      { ruleId: "sql-parameterized" },
+      "Rule `sql-parameterized` is locked and always on. Locked rules can't be changed; don't try again."
+    ],
+    [
+      "removeRule",
+      "a recommended rule with no reason",
+      { ruleId: "validate-input" },
+      "A reason is required to switch off a recommended rule."
+    ],
+    [
+      "removeRule",
+      "a recommended rule with a placeholder reason",
+      { ruleId: "validate-input", reason: "No reason" },
+      "The reason must say why the team is switching this rule off, in at least 10 characters."
+    ],
+    [
+      "removeRule",
+      "a recommended rule with a reason over 200 characters",
+      { ruleId: "validate-input", reason: x(201) },
+      "The reason must be at most 200 characters."
+    ],
+    [
+      "addRule",
+      "text under 10 characters",
+      { text: "Short", severity: "warning" },
+      "Rule text must be between 10 and 200 characters."
+    ],
+    [
+      "addRule",
+      "text over 200 characters",
+      { text: x(201), severity: "warning" },
+      "Rule text must be between 10 and 200 characters."
+    ]
+  ];
+
+  it.each(refused)(
+    "%s on %s: refused whatever the rules are",
+    (tool, _case, input, message) => {
+      expect(argumentRefusal(tool, input)?.message).toBe(message);
+      // execute gives the same refusal with the rule on or off
+      for (const off of [[], ["validate-input"]]) {
+        const { tables, data } = memoryTables(
+          [],
+          off.map((ruleId) => switchedOffRow(ruleId))
+        );
+        const change =
+          tool === "addRule"
+            ? () =>
+                addRule(
+                  tables,
+                  input as { text: string; severity: "warning" },
+                  NOW
+                )
+            : tool === "removeRule"
+              ? () =>
+                  removeRule(
+                    tables,
+                    input as { ruleId: string; reason?: string },
+                    NOW
+                  )
+              : () => restoreRule(tables, input as { ruleId: string });
+        expectRefused(data, change, message);
+      }
+    }
+  );
+
+  it.each([
+    [
+      "removeRule",
+      "a recommended rule with a real reason",
+      { ruleId: "validate-input", reason: "Covered by our own linting" }
+    ],
+    ["removeRule", "a custom rule with no reason", { ruleId: "c_00000001" }],
+    ["removeRule", "an unknown rule", { ruleId: "no-such-rule" }],
+    [
+      "removeRule",
+      "a locked rule's ID in other case",
+      { ruleId: "NO-SECRETS" }
+    ],
+    ["restoreRule", "an unlocked rule", { ruleId: "validate-input" }],
+    [
+      "addRule",
+      "text of a valid length",
+      { text: "Use the shared HTTP client", severity: "warning" }
+    ]
+  ])(
+    "%s on %s: waits for approval, since the outcome depends on the rules",
+    (tool, _case, input) => {
+      expect(argumentRefusal(tool, input)).toBeUndefined();
+    }
+  );
 });

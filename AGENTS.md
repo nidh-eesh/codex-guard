@@ -9,7 +9,7 @@ Instructions for AI coding agents working in this repo. `DESIGN.md` is the sourc
 - Diffs and review free text (`message`, `suggestion`) never reach the chat model.
 - Every review-model output is validated (Zod shape + `ruleId` exists + `file` is in the chunk + `line` is one of that file's numbered lines) before it is shown or stored.
 - Active rules always include every locked starter rule; locked rules can never be switched off or deleted.
-- `addRule`, `removeRule` and `restoreRule` always require human approval; rules change only inside those tools' `execute`.
+- Every call that could change a rule needs approval. `needsApproval` returns false, and `execute` refuses at once, only when the refusal can't depend on workspace state: the target rule is locked (`removeRule`, `restoreRule`), or the arguments fail validation (length limits, a missing or placeholder reason). Refusals that depend on SQLite state (already off, not off, duplicate, the 50-rule cap) keep approval, because that state can change between the check and `execute`. Rules change only inside the `execute` of `addRule`, `removeRule` and `restoreRule`.
 - Workspace IDs are validated before being used as an agent instance name, and only the lowercase form is accepted (the browser lowercases; the server rejects anything else).
 - Workers observability stays off: invocation logs record request URLs, and the SDK logs instance names on errors.
 - No credentials in code or commits (gitleaks in CI). Never log diffs, findings, request paths or workspace IDs. Redact matched secrets in stored findings. This repo follows its own starter pack.

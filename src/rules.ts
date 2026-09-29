@@ -106,3 +106,17 @@ export const STARTER_PACK = [
     locked: false
   }
 ] as const satisfies readonly StarterRule[];
+
+/**
+ * Whether `id` names a locked starter rule. `locked` is fixed in code, so
+ * the answer can't change between this check and a tool's `execute` (D28).
+ * IDs match exactly, as the rule tools match them.
+ */
+export function isLockedRuleId(id: string): boolean {
+  return STARTER_PACK.some((rule) => rule.id === id && rule.locked);
+}
+
+/** Whether `id` names a rule in the starter pack, which is fixed in code. */
+export function isStarterRuleId(id: string): boolean {
+  return STARTER_PACK.some((rule) => rule.id === id);
+}

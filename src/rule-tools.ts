@@ -2,6 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import {
   addRule,
+  argumentRefusal,
   readRules,
   removeRule,
   restoreRule,
@@ -24,10 +25,21 @@ const ruleId = z
   .describe("The rule's ID, exactly as listRules shows it");
 
 /**
+ * A call refused on its arguments alone (a locked rule, a length limit, a
+ * missing or placeholder reason) can't change anything whenever it runs, so
+ * it runs without asking a person and `execute` refuses it at once. A call
+ * whose outcome depends on the rules in SQLite waits for approval (D28).
+ */
+const unlessRefusedOnArguments =
+  (toolName: string) =>
+  (input: unknown): boolean =>
+    argumentRefusal(toolName, input) === undefined;
+
+/**
  * The chat model's tools. Rules change only inside the `execute` of addRule,
- * removeRule and restoreRule, and a person approves each call before it runs
- * (D4). `execute` checks everything again at that point: the rules may have
- * changed while the call waited for approval.
+ * removeRule and restoreRule, and a person approves each call that could
+ * change a rule before it runs (D4, D28). `execute` checks everything again
+ * at that point: the rules may have changed while the call waited.
  */
 export function ruleTools(
   tables: RuleTables,
@@ -52,7 +64,7 @@ export function ruleTools(
             "error: a violation fails the review. warning: it's reported, but the review can still pass."
           )
       }),
-      needsApproval: true,
+      needsApproval: unlessRefusedOnArguments("addRule"),
       execute: async (input) => {
         const rule = addRule(tables, input, now());
         onChange();
@@ -69,10 +81,10 @@ export function ruleTools(
           .string()
           .optional()
           .describe(
-            "Why the team is switching off a recommended rule, up to 200 characters"
+            "Why the team is switching off a recommended rule, in the user's own words, 10-200 characters. If the user hasn't said why, ask them; never make one up."
           )
       }),
-      needsApproval: true,
+      needsApproval: unlessRefusedOnArguments("removeRule"),
       execute: async (input) => {
         const removal = removeRule(tables, input, now());
         onChange();
@@ -86,7 +98,7 @@ export function ruleTools(
       description:
         "Switch a recommended rule back on. A person approves the change first.",
       inputSchema: z.object({ ruleId }),
-      needsApproval: true,
+      needsApproval: unlessRefusedOnArguments("restoreRule"),
       execute: async (input) => {
         const rule = restoreRule(tables, input);
         onChange();

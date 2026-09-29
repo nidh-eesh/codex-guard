@@ -20,13 +20,96 @@ function memoryTables(): RuleTables {
 const call = { toolCallId: "call-1", messages: [] };
 
 describe("ruleTools", () => {
-  it("needs a person's approval for every tool that changes rules", () => {
+  // needsApproval as the ai package calls it: with the call's input
+  async function needsApproval(
+    tool: { needsApproval?: unknown },
+    input: unknown
+  ): Promise<boolean> {
+    const setting = tool.needsApproval;
+    return typeof setting === "function"
+      ? Boolean(await setting(input, { toolCallId: "call-1", messages: [] }))
+      : Boolean(setting);
+  }
+
+  it("asks a person before adding a rule of valid length, and never for listing", async () => {
     const tools = ruleTools(memoryTables(), () => {});
-    expect(tools.addRule.needsApproval).toBe(true);
-    expect(tools.removeRule.needsApproval).toBe(true);
-    expect(tools.restoreRule.needsApproval).toBe(true);
+    expect(
+      await needsApproval(tools.addRule, {
+        text: "Use the shared HTTP client",
+        severity: "warning"
+      })
+    ).toBe(true);
     expect(tools.listRules.needsApproval).toBeFalsy();
   });
+
+  it.each([
+    [
+      "addRule",
+      "text under 10 characters",
+      { text: "Short", severity: "warning" }
+    ],
+    [
+      "removeRule",
+      "a recommended rule with no reason",
+      { ruleId: "validate-input" }
+    ],
+    [
+      "removeRule",
+      "a recommended rule with a placeholder reason",
+      { ruleId: "validate-input", reason: "Not needed" }
+    ]
+  ] as const)(
+    "refuses %s on %s without asking, and changes nothing (D28)",
+    async (toolName, _case, input) => {
+      const tables = memoryTables();
+      const onChange = vi.fn();
+      const tools = ruleTools(tables, onChange);
+      const before = readRules(tables);
+      const tool = tools[toolName];
+      expect(await needsApproval(tool, input)).toBe(false);
+      await expect(
+        (tool.execute as (i: unknown, c: unknown) => Promise<unknown>)(
+          input,
+          call
+        )
+      ).rejects.toThrow(RuleError);
+      expect(readRules(tables)).toEqual(before);
+      expect(onChange).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    ["an unlocked starter rule", "validate-input"],
+    ["a custom rule", "c_1a2b3c4d"],
+    ["an unknown rule", "no-such-rule"],
+    // Not the locked rule's exact ID: execute won't treat it as that rule
+    ["a locked rule's ID in other case", "NO-SECRETS"]
+  ])("needs approval to remove or restore %s (D28)", async (_case, ruleId) => {
+    const tools = ruleTools(memoryTables(), () => {});
+    const input = { ruleId, reason: "Covered by another check" };
+    expect(await needsApproval(tools.removeRule, input)).toBe(true);
+    expect(await needsApproval(tools.restoreRule, { ruleId })).toBe(true);
+  });
+
+  it.each(["no-secrets", "sql-parameterized"])(
+    "refuses a call on the locked rule %s without asking, and changes nothing (D28)",
+    async (ruleId) => {
+      const tables = memoryTables();
+      const onChange = vi.fn();
+      const tools = ruleTools(tables, onChange);
+      const before = readRules(tables);
+      expect(await needsApproval(tools.removeRule, { ruleId })).toBe(false);
+      expect(await needsApproval(tools.restoreRule, { ruleId })).toBe(false);
+      await expect(
+        tools.removeRule.execute!({ ruleId, reason: "Not needed here" }, call)
+      ).rejects.toThrow("Locked rules can't be changed; don't try again.");
+      await expect(
+        tools.restoreRule.execute!({ ruleId }, call)
+      ).rejects.toThrow(RuleError);
+      expect(readRules(tables)).toEqual(before);
+      expect(onChange).not.toHaveBeenCalled();
+    }
+  );
 
   it("offers the chat model exactly the four rule tools", () => {
     expect(Object.keys(ruleTools(memoryTables(), () => {})).sort()).toEqual([

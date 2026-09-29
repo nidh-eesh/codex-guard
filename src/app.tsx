@@ -5,6 +5,7 @@ import { getToolName, isToolUIPart, type UIMessage } from "ai";
 import type { ChatAgent } from "./server";
 import type { ResolvedRules } from "./rules";
 import type { WorkspaceState } from "./rule-state";
+import { ruleChangeRefusal } from "./rule-changes";
 import {
   budgetMeterText,
   currentMeter,
@@ -47,6 +48,7 @@ import {
   LinkBreakIcon,
   ListChecksIcon,
   LockIcon,
+  WarningCircleIcon,
   ShieldCheckIcon
 } from "@phosphor-icons/react";
 
@@ -289,6 +291,11 @@ function ToolPartView({
   if ("approval" in part && part.state === "approval-requested") {
     const approvalId = (part.approval as { id?: string })?.id;
     const description = describeRuleChange(toolName, part.input, rules);
+    // The server's own checks, run on the rules this page has: a change that
+    // will be refused can't be approved (D28). The server checks again.
+    const refusal = rules
+      ? ruleChangeRefusal(toolName, part.input, rules)
+      : undefined;
     return (
       <div className="flex justify-start">
         <Surface className="max-w-[85%] px-4 py-3 rounded-xl ring-2 ring-kumo-warning">
@@ -301,6 +308,15 @@ function ToolPartView({
           {description && (
             <p className="mb-2 text-sm text-kumo-default">{description}</p>
           )}
+          {refusal && (
+            <p
+              role="alert"
+              className="mb-2 flex items-start gap-1.5 text-sm text-kumo-danger"
+            >
+              <WarningCircleIcon size={16} className="mt-0.5 shrink-0" />
+              <span>This will be refused: {refusal}</span>
+            </p>
+          )}
           <div className="font-mono mb-3">
             <Text size="xs" variant="secondary">
               {JSON.stringify(part.input, null, 2)}
@@ -311,8 +327,9 @@ function ToolPartView({
               variant="primary"
               size="sm"
               icon={<CheckCircleIcon size={14} />}
+              disabled={Boolean(refusal)}
               onClick={() => {
-                if (approvalId) {
+                if (approvalId && !refusal) {
                   addToolApprovalResponse({ id: approvalId, approved: true });
                 }
               }}

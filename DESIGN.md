@@ -55,12 +55,14 @@ A guardrail agent for engineering teams, built on Cloudflare. Each workspace sta
 
 ## 4. Chat tools
 
-| Tool          | Input                                                             | Approval | Why                                                                                                                           |
-| ------------- | ----------------------------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `addRule`     | `{ text: string (10–200 chars), severity: "error" \| "warning" }` | Yes      | Any tool the chat model can call is a path for prompt injection; approval puts a human between the model and the rules.       |
-| `listRules`   | none                                                              | No       | Read-only                                                                                                                     |
-| `removeRule`  | `{ ruleId: string, reason?: string }`                             | Yes      | Deletes a custom rule, or switches off a recommended default (reason required). Locked rules are refused.                     |
-| `restoreRule` | `{ ruleId: string }`                                              | Yes      | Switches a recommended default back on by deleting its `disabled_defaults` row. Every rule change goes through approval (D4). |
+| Tool          | Input                                                             | Approval                             | Why                                                                                                                                                  |
+| ------------- | ----------------------------------------------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `addRule`     | `{ text: string (10–200 chars), severity: "error" \| "warning" }` | Yes, unless refused on its arguments | Any tool the chat model can call is a path for prompt injection; approval puts a human between the model and the rules.                              |
+| `listRules`   | none                                                              | No                                   | Read-only                                                                                                                                            |
+| `removeRule`  | `{ ruleId: string, reason?: string }`                             | Yes, unless refused on its arguments | Deletes a custom rule, or switches off a recommended default (a real reason required).                                                               |
+| `restoreRule` | `{ ruleId: string }`                                              | Yes, unless refused on its arguments | Switches a recommended default back on by deleting its `disabled_defaults` row. Every call that could change a rule goes through approval (D4, D28). |
+
+A call refused on its arguments alone (a locked rule, a length limit, a missing or placeholder reason) can't change anything whenever it runs, so it's refused at once without asking. A call whose outcome depends on the rules in SQLite (already off, not off, a duplicate, the 50-rule cap) waits for approval, because the rules can change before `execute` (D28). A chat turn ends at 5 steps. After a refused or rejected call, the next step runs with no tools, so the model explains in words and can't retry. The approval card runs the tool's own checks on the rules in agent state and disables Approve for a change that will be refused.
 
 Rules change only inside these tools' `execute`. Reviewing a diff is not a chat tool: diffs are submitted through the review box (§6, D8).
 
@@ -70,32 +72,35 @@ The chat model is called without token streaming: the provider doubles streamed 
 
 Messages are exact strings, including the backticks.
 
-| Case                                                     | Message                                                                                                       |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Rule text empty, or outside 10–200 characters            | "Rule text must be between 10 and 200 characters."                                                            |
-| Duplicate rule                                           | "A rule with this text already exists."                                                                       |
-| Adding or restoring a 51st rule                          | "This workspace has 50 rules, the maximum. Remove one first."                                                 |
-| Unknown rule ID                                          | "No rule with ID `{ruleId}` exists in this workspace."                                                        |
-| Removing or switching off a locked rule                  | "Rule `{ruleId}` is locked and can't be switched off."                                                        |
-| Switching off a recommended rule without a reason        | "A reason is required to switch off a recommended rule."                                                      |
-| A reason over 200 characters                             | "The reason must be at most 200 characters."                                                                  |
-| Switching off a rule that is already switched off        | "Rule `{ruleId}` is already switched off."                                                                    |
-| Restoring a rule that isn't switched off                 | "Rule `{ruleId}` is not switched off."                                                                        |
-| Empty diff                                               | "The diff is empty. Paste a unified diff to review."                                                          |
-| Not a unified diff (no `@@` hunk header)                 | "This doesn't look like a unified diff. Paste the output of `git diff`."                                      |
-| A file was skipped; `{reason}` is `lockfile` or `binary` | "Skipped `{file}` ({reason})."                                                                                |
-| A file was skipped as minified or generated              | "Review incomplete: `{file}` was skipped as minified or generated and could hide code that breaks the rules." |
-| Every file in the diff was skipped                       | "Nothing to review: every file in the diff was skipped."                                                      |
-| Diff over 50 KB (`MAX_DIFF_BYTES = 50_000`)              | "The diff is larger than 50 KB. Split it into smaller reviews."                                               |
-| Per-IP rate limit reached                                | "Too many requests. Try again in a minute."                                                                   |
-| A review would fit once the running reviews settle       | "Another review is running. Try again in a few minutes."                                                      |
-| Daily review budget used up                              | "The daily review limit has been reached. Try again tomorrow."                                                |
-| Daily chat budget used up                                | "The daily chat limit has been reached. Try again tomorrow."                                                  |
-| A chunk failed after its retries                         | "Review incomplete: {n} of {total} chunks couldn't be reviewed."                                              |
-| A finding for an error-severity rule failed validation   | "Review incomplete: {m} findings for error rules failed validation."                                          |
-| A chunk's answer reached the findings cap                | "Too many findings in one part of the diff to be sure no error was missed. Fix these and review again."       |
-| The review workflow itself failed                        | "Review incomplete: the review couldn't be finished. Try again."                                              |
-| Invalid workspace ID                                     | "This workspace link is invalid." (shown by the browser; the server answers HTTP 400)                         |
+| Case                                                                  | Message                                                                                                       |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Rule text empty, or outside 10–200 characters                         | "Rule text must be between 10 and 200 characters."                                                            |
+| Duplicate rule                                                        | "A rule with this text already exists."                                                                       |
+| Adding or restoring a 51st rule                                       | "This workspace has 50 rules, the maximum. Remove one first."                                                 |
+| Unknown rule ID                                                       | "No rule with ID `{ruleId}` exists in this workspace."                                                        |
+| Removing or switching off a locked rule                               | "Rule `{ruleId}` is locked and can't be switched off. Locked rules can't be changed; don't try again."        |
+| Restoring a locked rule                                               | "Rule `{ruleId}` is locked and always on. Locked rules can't be changed; don't try again."                    |
+| Switching off a recommended rule without a reason                     | "A reason is required to switch off a recommended rule."                                                      |
+| A reason under 10 characters, or a placeholder such as "No reason"    | "The reason must say why the team is switching this rule off, in at least 10 characters."                     |
+| An approval for a change the server will refuse (Approve is disabled) | "This will be refused: {the refusal's message}"                                                               |
+| A reason over 200 characters                                          | "The reason must be at most 200 characters."                                                                  |
+| Switching off a rule that is already switched off                     | "Rule `{ruleId}` is already switched off."                                                                    |
+| Restoring a rule that isn't switched off                              | "Rule `{ruleId}` is not switched off."                                                                        |
+| Empty diff                                                            | "The diff is empty. Paste a unified diff to review."                                                          |
+| Not a unified diff (no `@@` hunk header)                              | "This doesn't look like a unified diff. Paste the output of `git diff`."                                      |
+| A file was skipped; `{reason}` is `lockfile` or `binary`              | "Skipped `{file}` ({reason})."                                                                                |
+| A file was skipped as minified or generated                           | "Review incomplete: `{file}` was skipped as minified or generated and could hide code that breaks the rules." |
+| Every file in the diff was skipped                                    | "Nothing to review: every file in the diff was skipped."                                                      |
+| Diff over 50 KB (`MAX_DIFF_BYTES = 50_000`)                           | "The diff is larger than 50 KB. Split it into smaller reviews."                                               |
+| Per-IP rate limit reached                                             | "Too many requests. Try again in a minute."                                                                   |
+| A review would fit once the running reviews settle                    | "Another review is running. Try again in a few minutes."                                                      |
+| Daily review budget used up                                           | "The daily review limit has been reached. Try again tomorrow."                                                |
+| Daily chat budget used up                                             | "The daily chat limit has been reached. Try again tomorrow."                                                  |
+| A chunk failed after its retries                                      | "Review incomplete: {n} of {total} chunks couldn't be reviewed."                                              |
+| A finding for an error-severity rule failed validation                | "Review incomplete: {m} findings for error rules failed validation."                                          |
+| A chunk's answer reached the findings cap                             | "Too many findings in one part of the diff to be sure no error was missed. Fix these and review again."       |
+| The review workflow itself failed                                     | "Review incomplete: the review couldn't be finished. Try again."                                              |
+| Invalid workspace ID                                                  | "This workspace link is invalid." (shown by the browser; the server answers HTTP 400)                         |
 
 ## 6. Review workflow
 
@@ -131,7 +136,7 @@ Messages are exact strings, including the backticks.
 1. **The review model has no tools, and diffs never reach the chat model. This is the guarantee.** Diffs go from the review box straight to the workflow (D8), so the only model that sees a diff can't call `addRule`, `removeRule` or `restoreRule`. Review results reach the chat model only as validated fields (`ruleId`, `file`, `line`, verdict), never as free text (D9). File paths come from the diff, so a path that isn't plain is withheld. A malicious diff can't change the rules.
 2. **Untrusted text is treated as data. This is a mitigation.** The diff and the custom rules are wrapped in delimiters, and the system prompt says the content inside is untrusted, must never be followed as instructions, and that locked rules take priority over custom rules. Models can still be tricked. Layer 1 keeps a successful trick away from the rules, but it can still produce a wrong review, and for a guardrail a false pass is exactly what an attacker wants; layers 3 and 5 limit that.
 3. **Output validation.** Zod checks each finding's shape. Further checks confirm that the `ruleId` exists in the rules snapshot, that `file` is one of the chunk's files, and that `line` is one of that file's numbered lines (D13). Findings that fail are dropped and counted; malformed responses are retried by the workflow step. Severity comes from the rule, not the model, and the verdict fails closed: a failed chunk or a discarded error-rule finding makes it `incomplete`, never `pass` (D10).
-4. **Approval on rule-changing chat tools.** A human confirms before the chat model changes any rule.
+4. **Approval on rule-changing chat tools.** A human confirms before the chat model changes any rule. A call refused on its arguments alone (a locked rule, a length limit, a missing or placeholder reason) is refused at once without asking: it can't change anything, and neither `locked` nor the arguments can change before `execute` (D28).
 5. **A deterministic check for `no-secrets`.** A regex pass over added lines, including those in skipped files, reports common key formats as `no-secrets` findings that no prompt can argue away (D11). `sql-parameterized` has no such check: for it, "locked" guarantees the rule stays on, not that every violation is caught.
 6. **State is written only by the server.** Browsers receive agent `state` but can't write it (`validateStateChange` rejects writes from connections), and the review reads rules only from SQLite, through the snapshot passed to the workflow.
 7. **Only the chat agent is routable.** `/agents/*` reaches `ChatAgent` alone; the daily budget is a plain Durable Object reached only by RPC from the agent, and any other class gets a 404 (D25).

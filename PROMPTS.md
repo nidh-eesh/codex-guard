@@ -298,3 +298,33 @@ Add a "Live demo" link to https://codexguard.nidheesh.me at the top of the READM
 ````text
 Run the redeploy now. The change to move the domain to cloudflare has now completed. Update the wrangler.jsonc
 ````
+
+### 2026-09-29 02:25 UTC
+
+````text
+Review the behaviour and responses of this session: https://codex-guard.nidheeshdevops.workers.dev/w/a13ae190-e422-442a-87d9-768ec0cc00e9
+````
+
+### 2026-09-29 02:45 UTC
+
+````text
+In the live workspace "disable all rules" looped, after switching off the four unlocked rules, the model alternated removeRule(no-secrets) (refused, locked) and removeRule(validate-input) (refused, already off). Each Approve started a new continuation, so the 5-step limit never stopped it, and it used over 10% of the chat budget.
+
+Fix for this:
+1. Stop the turn when the last step has a tool error (stopWhen, alongside a stepCountIs(5)), so a refused call is never retried in the same turn.
+2. needsApproval as a function that returns false only when the target rule is locked (removeRule and restoreRule). Locked is fixed in code, so there's no check-then-act race. Everything else still needs approval, and execute keeps its checks. Update the AGENTS.md invariant to "Every call that could change a rule needs approval, a call on a locked rule is refused without approval, because locked is fixed in code", and draft a decision entry.
+````
+
+### 2026-09-29 02:47 UTC
+
+````text
+The locked-rule error adds "Locked rules can't be changed; don't try again." Update section 5.
+Plus Fix A, the reason checks, and the prompt changes from my last message.
+Create tests, including a replay of this loop with a mock model, it must stop after the first refusal. Commit messages, and ask before redeploying.
+````
+
+### 2026-09-29 07:13 UTC
+
+````text
+A revisal for the approval rule needsApproval returns false, and execute refuses at once, only when the refusal can't depend on workspace state: the target rule is locked (removeRule, restoreRule), or the arguments fail validation (length limits, missing or placeholder reason). Everything that depends on SQLite state (already off, not off, duplicate, 50-rule cap) keeps approval, because it can change between the check and execute. Update the AGENTS.md invariant and draft a decision entry explaining that line.After a step with a tool error, run the next step with no tools (prepareStep, activeTools: []) so the model has to explain the refusal in words and can't retry. Keep stepCountIs(5). Test it with a replay of the "disable all rules" loop and a mock model. Also try to think of a rule bulk removal so that it doesn't require multiple approval and turns for each and a list tool call in between saving neurons
+````
