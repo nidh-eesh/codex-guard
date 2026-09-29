@@ -280,3 +280,9 @@ Also push the meter right after a review reserves. Make it visually pleasing, al
 
 Write D27 and the section 2 line, update the tests, and give me the commit message. Then start step 6: README, deploy, and the post-deploy smoke script. Ask before running the deploy.
 ````
+
+### 2026-09-29 00:58 UTC
+
+````text
+Rate limiter IDs 1001 and 1002 are free. Go ahead and deploy, then run the smoke test against the URL.
+````
