@@ -26,11 +26,8 @@ import { ruleTools, toolErrorText } from "./rule-tools";
 import { checkDiff } from "./diff-input";
 import { unfinishedReview } from "./review-combine";
 import { sqliteReviews } from "./review-store";
-import {
-  redactReview,
-  reviewMessage,
-  stripReviewDetails
-} from "./review-summary";
+import { redactReview, reviewMessage } from "./review-summary";
+import { chatHistory, chatTurnNeurons } from "./chat-turn";
 import type { ReviewResult } from "./review-types";
 import type { ReviewParams } from "./review-workflow";
 import type { ReviewRun } from "./review-pipeline";
@@ -38,9 +35,9 @@ import { worstCaseNeurons } from "./review-cost";
 import { splitDiff } from "./diff-split";
 import { chunkBudget } from "./token-budget";
 import {
+  assertReserved,
   budgetDay,
-  DAILY_LIMIT_MESSAGE,
-  DailyLimitError
+  DAILY_CHAT_LIMIT_MESSAGE
 } from "./budget-ledger";
 import {
   chatErrorResponse,
@@ -130,9 +127,9 @@ export class ChatAgent extends AIChatAgent<Env, ResolvedRules> {
       neurons: worstCaseNeurons(MODEL, chunks, params.rules)
     };
     const budget = this.env.NEURON_BUDGET.getByName(reservation.day);
-    if (!(await budget.reserve(reviewId, reservation.neurons))) {
-      throw new DailyLimitError(DAILY_LIMIT_MESSAGE);
-    }
+    // Refused as busy when running reviews hold the room, or as over the
+    // daily limit when what's already spent does (D24)
+    assertReserved(await budget.reserve(reviewId, reservation.neurons));
     this.reviews.saveReservation(reviewId, reservation);
 
     try {
@@ -190,14 +187,20 @@ export class ChatAgent extends AIChatAgent<Env, ResolvedRules> {
   }
 
   async onChatMessage(_onFinish: unknown, options?: OnChatMessageOptions) {
+    // Charged to the day the turn started on, like a review's reservation
+    const budget = this.env.NEURON_BUDGET.getByName(budgetDay(new Date()));
+
     // Every turn from a browser counts, approval continuations included.
     // Recovery after an eviction has no connection: it resumes a turn that
-    // was already counted.
+    // was already counted and allowed.
     if (getCurrentAgent().connection) {
       const { success } = await this.env.CHAT_RATE_LIMIT.limit({
         key: rateLimitKey(this.callerIp())
       });
       if (!success) return chatErrorResponse(RATE_LIMITED_MESSAGE);
+      if (!(await budget.chatAllowed())) {
+        return chatErrorResponse(DAILY_CHAT_LIMIT_MESSAGE);
+      }
     }
 
     const workersai = createWorkersAI({ binding: this.env.AI });
@@ -215,20 +218,22 @@ export class ChatAgent extends AIChatAgent<Env, ResolvedRules> {
       }),
       maxOutputTokens: MODEL.maxOutputTokens,
       system: SYSTEM_PROMPT,
-      // Prune old tool calls to save tokens on long conversations. Review
+      // Only the latest messages (D26), with old tool calls pruned. Review
       // messages keep only their summary: message and suggestion never
       // reach this model (D9).
       messages: pruneMessages({
-        messages: await convertToModelMessages(
-          stripReviewDetails(this.messages)
-        ),
+        messages: await convertToModelMessages(chatHistory(this.messages)),
         toolCalls: "before-last-2-messages"
       }),
       // Server-defined tools only: options.clientTools never reaches the model
       tools: ruleTools(this.ruleTables, () => this.pushRules()),
       // Room for a tool call and the answer after it
       stopWhen: stepCountIs(5),
-      abortSignal: options?.abortSignal
+      abortSignal: options?.abortSignal,
+      // Charged after the turn from the usage the model reported (D26).
+      // onFinish also runs for a turn stopped after a finished step, with
+      // the steps that finished; charging in onAbort too would count twice.
+      onFinish: ({ steps }) => budget.chargeChat(chatTurnNeurons(MODEL, steps))
     });
 
     return result.toUIMessageStreamResponse({ onError: toolErrorText });

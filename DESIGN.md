@@ -19,7 +19,7 @@ A guardrail agent for engineering teams, built on Cloudflare. Each workspace sta
 - The browser lowercases the UUID, and the server accepts only the lowercase form: the router hooks (`onBeforeConnect`, `onBeforeRequest`) validate it before it is used as an instance name and answer anything else with HTTP 400. The hooks can't lowercase it themselves, because the SDK reads the instance name from the URL before they run (D15). The browser runs the same check and shows the §5 message, because it can't read the status of a failed WebSocket handshake.
 - No "does it exist?" check: a random UUID has 122 random bits, so collisions are not a practical concern, and addressing an instance by name creates it.
 - **The link is the credential:** responses send `Referrer-Policy: no-referrer`, and request paths and workspace IDs are never logged. Workers observability is off, because invocation logs record request URLs and the SDK's error logs include instance names (D16).
-- **Cost limits:** a per-IP rate limit of 3 review submissions and 10 chat turns a minute (IPv6 keyed by its /64; D23), and a global daily budget of estimated neurons for reviews (D12).
+- **Cost limits:** a per-IP rate limit of 3 review submissions and 10 chat turns a minute (IPv6 keyed by its /64; D23), and global daily budgets of 6,000 estimated neurons for reviews (D12) and 3,000 for chat, charged after each turn (D26).
 - **Known limits:** anyone with the link has full access (no authentication), a leaked link can't be rotated, and there is no rate limit on creating workspaces. See §8.
 
 ## 3. Rules
@@ -64,7 +64,7 @@ A guardrail agent for engineering teams, built on Cloudflare. Each workspace sta
 
 Rules change only inside these tools' `execute`. Reviewing a diff is not a chat tool: diffs are submitted through the review box (§6, D8).
 
-The chat model is called without token streaming: the provider doubles streamed tool-call arguments for this model, so replies appear all at once (D20).
+The chat model is called without token streaming: the provider doubles streamed tool-call arguments for this model, so replies appear all at once (D20). It sees only the latest 10 messages, and sees the rules only by calling `listRules` (D26).
 
 ## 5. Error messages
 
@@ -88,7 +88,9 @@ Messages are exact strings, including the backticks.
 | Every file in the diff was skipped                       | "Nothing to review: every file in the diff was skipped."                                                      |
 | Diff over 50 KB (`MAX_DIFF_BYTES = 50_000`)              | "The diff is larger than 50 KB. Split it into smaller reviews."                                               |
 | Per-IP rate limit reached                                | "Too many requests. Try again in a minute."                                                                   |
+| A review would fit once the running reviews settle       | "Another review is running. Try again in a few minutes."                                                      |
 | Daily review budget used up                              | "The daily review limit has been reached. Try again tomorrow."                                                |
+| Daily chat budget used up                                | "The daily chat limit has been reached. Try again tomorrow."                                                  |
 | A chunk failed after its retries                         | "Review incomplete: {n} of {total} chunks couldn't be reviewed."                                              |
 | A finding for an error-severity rule failed validation   | "Review incomplete: {m} findings for error rules failed validation."                                          |
 | A chunk's answer reached the findings cap                | "Too many findings in one part of the diff to be sure no error was missed. Fix these and review again."       |
@@ -149,5 +151,6 @@ Messages are exact strings, including the backticks.
 - Choosing between models (for example GLM-4.7-Flash); the budget already reads the context window, maximum output and prices from the model config
 - Supply-chain review of lockfiles and binary files
 - A code file named like a lockfile (for example `src/db/yarn.lock`, loaded with `require`) is skipped unreviewed; only the `no-secrets` check scans it.
+- A chat message refused by the rate limit or the daily chat limit stays in the history without an answer, and the chat model sees it on the next turn: the SDK saves a message before the agent can refuse it, and removing it would need the SDK's internal APIs.
 
 Decisions and their reasoning are logged in [`docs/DECISIONS.md`](docs/DECISIONS.md).

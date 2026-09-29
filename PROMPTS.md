@@ -247,3 +247,22 @@ No vitest-pool-workers. Instead, in step 6, add a post-deploy smoke script that 
 
 Stop after that with commit messages. Then step 6: README and deploy.
 ````
+
+### 2026-09-29 00:03 UTC
+
+````text
+D23's sentence and the Section 8 refused-message line are approved.
+
+D26 is approved with two changes:
+1. Put the current active rules into the chat system prompt, built fresh each turn: starter rules plainly, custom rules between delimiters as untrusted data, as in the review prompt. Keep listRules. Then re-measure the same 5 prompts and put both sets of numbers in D26.
+2. Change the caps to 6,000 for reviews and 3,000 for chat, leaving 1,000 of the Free plan's 10,000 for overshoot and my own testing. The budget DO doesn't count evals or dev usage. Update D12, D24 and D26 to match.
+Then write the docs and give me the commit messages. Don't start step 6 yet.
+````
+
+### 2026-09-29 00:21 UTC
+
+````text
+Revert the rules-in-prompt change: keep listRules as the only way the chat model sees rules and keep the chat budget and the 10-message window. Keep D26's record of both measurements and add it was reverted and why (more cost, and untrusted text in the sys prompt). Undo the section 7 layer 2 line about chat prompt.
+Add the busy case: if a review would fit once the running reservations settle, refuse it with "Another review is running. Try again in a few minutes." instead of the daily limit message. Add the section 5 row and a test for this.
+Don't split commits with git add -p. Give me one commit for the D23 sentence and the section 8 line, touching only the files that change, or fold them into the main commit if they can't be separated cleanly.
+````

@@ -1,15 +1,18 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  chatTurnAllowed,
   reserveBudget,
   settleBudget,
-  type BudgetLedger
+  type BudgetLedger,
+  type ReserveOutcome
 } from "./budget-ledger";
 
 /**
- * One day's review budget (D12). There is one instance per UTC date, named
- * by it, so each day starts afresh. A plain Durable Object, not an Agent: it
- * has no fetch handler, the router refuses every agent namespace but the
- * chat agent's, and only the chat agent calls it, over RPC.
+ * One day's review and chat budgets (D12, D26). There is one instance per
+ * UTC date, named by it, so each day starts afresh. A plain Durable Object,
+ * not an Agent: it has no fetch handler, the router refuses every agent
+ * namespace but the chat agent's (D25), and only the chat agent calls it,
+ * over RPC.
  */
 export class NeuronBudget extends DurableObject<Env> {
   private readonly ledger: BudgetLedger;
@@ -26,6 +29,11 @@ export class NeuronBudget extends DurableObject<Env> {
       neurons REAL NOT NULL
     )`);
     sql.exec("INSERT OR IGNORE INTO spent (id, neurons) VALUES (1, 0)");
+    sql.exec(`CREATE TABLE IF NOT EXISTS chat_spent (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      neurons REAL NOT NULL
+    )`);
+    sql.exec("INSERT OR IGNORE INTO chat_spent (id, neurons) VALUES (1, 0)");
 
     // Synchronous SQL: each reserve or settle reads and writes without
     // yielding, so two reviews can't both take the last of the budget
@@ -62,15 +70,36 @@ export class NeuronBudget extends DurableObject<Env> {
           "UPDATE spent SET neurons = neurons + ? WHERE id = 1",
           neurons
         );
+      },
+      chatSpent: () =>
+        sql
+          .exec<{
+            neurons: number;
+          }>("SELECT neurons FROM chat_spent WHERE id = 1")
+          .one().neurons,
+      addChatSpent: (neurons) => {
+        sql.exec(
+          "UPDATE chat_spent SET neurons = neurons + ? WHERE id = 1",
+          neurons
+        );
       }
     };
   }
 
-  reserve(reviewId: string, neurons: number): boolean {
+  reserve(reviewId: string, neurons: number): ReserveOutcome {
     return reserveBudget(this.ledger, reviewId, neurons);
   }
 
   settle(reviewId: string, neurons: number): void {
     settleBudget(this.ledger, reviewId, neurons);
+  }
+
+  chatAllowed(): boolean {
+    return chatTurnAllowed(this.ledger);
+  }
+
+  /** Charges a finished chat turn what the model reported it used. */
+  chargeChat(neurons: number): void {
+    this.ledger.addChatSpent(neurons);
   }
 }
