@@ -98,3 +98,32 @@ export function chatTurnAllowed(
 ): boolean {
   return ledger.chatSpent() < cap;
 }
+
+/** What's left of the day's budgets, in whole percent, for the meter. */
+export interface BudgetLeft {
+  reviews: number;
+  chat: number;
+}
+
+/**
+ * The percentage of `cap` left after `used`, rounded down so the meter never
+ * shows more than is left, and between 0 and 100 (spend can pass the cap).
+ */
+export function percentLeft(used: number, cap: number): number {
+  return Math.min(100, Math.max(0, Math.floor(((cap - used) * 100) / cap)));
+}
+
+/**
+ * What's left of each budget. Running reviews' reservations count as used:
+ * that room isn't available to the next review until they settle.
+ */
+export function budgetLeft(
+  ledger: BudgetLedger,
+  reviewCap: number = DAILY_REVIEW_NEURONS,
+  chatCap: number = DAILY_CHAT_NEURONS
+): BudgetLeft {
+  return {
+    reviews: percentLeft(ledger.spent() + ledger.reservedTotal(), reviewCap),
+    chat: percentLeft(ledger.chatSpent(), chatCap)
+  };
+}

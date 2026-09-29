@@ -19,7 +19,7 @@ A guardrail agent for engineering teams, built on Cloudflare. Each workspace sta
 - The browser lowercases the UUID, and the server accepts only the lowercase form: the router hooks (`onBeforeConnect`, `onBeforeRequest`) validate it before it is used as an instance name and answer anything else with HTTP 400. The hooks can't lowercase it themselves, because the SDK reads the instance name from the URL before they run (D15). The browser runs the same check and shows the §5 message, because it can't read the status of a failed WebSocket handshake.
 - No "does it exist?" check: a random UUID has 122 random bits, so collisions are not a practical concern, and addressing an instance by name creates it.
 - **The link is the credential:** responses send `Referrer-Policy: no-referrer`, and request paths and workspace IDs are never logged. Workers observability is off, because invocation logs record request URLs and the SDK's error logs include instance names (D16).
-- **Cost limits:** a per-IP rate limit of 3 review submissions and 10 chat turns a minute (IPv6 keyed by its /64; D23), and global daily budgets of 6,000 estimated neurons for reviews (D12) and 3,000 for chat, charged after each turn (D26).
+- **Cost limits:** a per-IP rate limit of 3 review submissions and 10 chat turns a minute (IPv6 keyed by its /64; D23), and global daily budgets of 6,000 estimated neurons for reviews (D12) and 3,000 for chat, charged after each turn (D26). A meter on the page shows what's left of both (D27).
 - **Known limits:** anyone with the link has full access (no authentication), a leaked link can't be rotated, and there is no rate limit on creating workspaces. See §8.
 
 ## 3. Rules

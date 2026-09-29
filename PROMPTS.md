@@ -266,3 +266,17 @@ Revert the rules-in-prompt change: keep listRules as the only way the chat model
 Add the busy case: if a review would fit once the running reservations settle, refuse it with "Another review is running. Try again in a few minutes." instead of the daily limit message. Add the section 5 row and a test for this.
 Don't split commits with git add -p. Give me one commit for the D23 sentence and the section 8 line, touching only the files that change, or fold them into the main commit if they can't be separated cleanly.
 ````
+
+### 2026-09-29 00:33 UTC
+
+````text
+Add a read-only budget meter: a getter on NeuronBudget returning the percentage left for reviews and for chat (reservations count as used), pushed in the agent's state when a workspace connects, after each review settles, and after each chat turn. Show "Shared AI budget today: reviews N% chat N% left resets 05:30 IST (00:00 UTC)". No polling. Add tests. Then stop.
+````
+
+### 2026-09-29 00:45 UTC
+
+````text
+Also push the meter right after a review reserves. Make it visually pleasing, also recheck if that's the best location for the component.
+
+Write D27 and the section 2 line, update the tests, and give me the commit message. Then start step 6: README, deploy, and the post-deploy smoke script. Ask before running the deploy.
+````

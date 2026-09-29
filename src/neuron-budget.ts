@@ -1,9 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  budgetLeft,
   chatTurnAllowed,
   reserveBudget,
   settleBudget,
   type BudgetLedger,
+  type BudgetLeft,
   type ReserveOutcome
 } from "./budget-ledger";
 
@@ -96,6 +98,11 @@ export class NeuronBudget extends DurableObject<Env> {
 
   chatAllowed(): boolean {
     return chatTurnAllowed(this.ledger);
+  }
+
+  /** What's left of the day's budgets, for the meter. Read-only. */
+  left(): BudgetLeft {
+    return budgetLeft(this.ledger);
   }
 
   /** Charges a finished chat turn what the model reported it used. */

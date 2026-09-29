@@ -18,9 +18,14 @@ import {
 import { MODEL } from "./model-config";
 import { withReferrerPolicy } from "./http";
 import { rejectAgentRoute } from "./workspace";
-import type { ResolvedRules } from "./rules";
 import { readRules } from "./rule-changes";
-import { NO_RULES, rejectBrowserStateWrites } from "./rule-state";
+import {
+  INITIAL_STATE,
+  rejectBrowserStateWrites,
+  withBudget,
+  withRules,
+  type WorkspaceState
+} from "./rule-state";
 import { sqliteRuleTables } from "./rule-tables";
 import { ruleTools, toolErrorText } from "./rule-tools";
 import { checkDiff } from "./diff-input";
@@ -65,10 +70,10 @@ const SYSTEM_PROMPT = `You are Codex Guard. You help an engineering team manage 
 
 Keep answers short.`;
 
-export class ChatAgent extends AIChatAgent<Env, ResolvedRules> {
+export class ChatAgent extends AIChatAgent<Env, WorkspaceState> {
   maxPersistedMessages = 100;
   chatRecovery = true;
-  initialState = NO_RULES;
+  initialState = INITIAL_STATE;
 
   // SQLite is the source of truth; the browser gets a copy as agent state
   private readonly ruleTables = sqliteRuleTables(this.sql.bind(this));
@@ -81,9 +86,10 @@ export class ChatAgent extends AIChatAgent<Env, ResolvedRules> {
 
   // The per-IP limits key on the IP read here, once, from the upgrade
   // request. The connection keeps it across hibernation; it's never logged.
-  onConnect(connection: Connection, ctx: ConnectionContext) {
+  async onConnect(connection: Connection, ctx: ConnectionContext) {
     const info: ConnectionInfo = { ip: clientIp(ctx.request) };
     connection.setState(info);
+    await this.pushBudget();
   }
 
   /** The IP of the connection that sent the current message. */
@@ -92,14 +98,31 @@ export class ChatAgent extends AIChatAgent<Env, ResolvedRules> {
   }
 
   validateStateChange(
-    _nextState: ResolvedRules,
+    _nextState: WorkspaceState,
     source: Connection | "server"
   ) {
     rejectBrowserStateWrites(source);
   }
 
   private pushRules() {
-    this.setState(readRules(this.ruleTables));
+    this.setState(withRules(this.state, readRules(this.ruleTables)));
+  }
+
+  /**
+   * Pushes what's left of today's shared budget to every connection: when a
+   * workspace connects, after a review reserves or settles, and after a chat
+   * turn (D27). Nothing polls, so between pushes it can lag other
+   * workspaces' use.
+   */
+  private async pushBudget() {
+    const day = budgetDay(new Date());
+    try {
+      const left = await this.env.NEURON_BUDGET.getByName(day).left();
+      this.setState(withBudget(this.state, { day, ...left }));
+    } catch {
+      // Display only: keep the last meter rather than fail a connection,
+      // a review or a chat turn over it
+    }
   }
 
   private readonly reviews = sqliteReviews(this.sql.bind(this));
@@ -131,6 +154,8 @@ export class ChatAgent extends AIChatAgent<Env, ResolvedRules> {
     // daily limit when what's already spent does (D24)
     assertReserved(await budget.reserve(reviewId, reservation.neurons));
     this.reviews.saveReservation(reviewId, reservation);
+    // The reservation counts as used, so every tab sees the room it takes
+    await this.pushBudget();
 
     try {
       await this.runWorkflow(REVIEW_WORKFLOW, params, { id: reviewId });
@@ -172,6 +197,7 @@ export class ChatAgent extends AIChatAgent<Env, ResolvedRules> {
       neurons ?? reservation.neurons
     );
     this.reviews.deleteReservation(reviewId);
+    await this.pushBudget();
   }
 
   /** DESIGN.md §6, step 8: store once, then post the summary to the chat. */
@@ -233,7 +259,10 @@ export class ChatAgent extends AIChatAgent<Env, ResolvedRules> {
       // Charged after the turn from the usage the model reported (D26).
       // onFinish also runs for a turn stopped after a finished step, with
       // the steps that finished; charging in onAbort too would count twice.
-      onFinish: ({ steps }) => budget.chargeChat(chatTurnNeurons(MODEL, steps))
+      onFinish: async ({ steps }) => {
+        await budget.chargeChat(chatTurnNeurons(MODEL, steps));
+        await this.pushBudget();
+      }
     });
 
     return result.toUIMessageStreamResponse({ onError: toolErrorText });

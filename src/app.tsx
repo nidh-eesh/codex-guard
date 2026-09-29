@@ -4,6 +4,14 @@ import { useAgentChat } from "@cloudflare/ai-chat/react";
 import { getToolName, isToolUIPart, type UIMessage } from "ai";
 import type { ChatAgent } from "./server";
 import type { ResolvedRules } from "./rules";
+import type { WorkspaceState } from "./rule-state";
+import {
+  budgetMeterText,
+  currentMeter,
+  meterTone,
+  type BudgetMeter,
+  type MeterTone
+} from "./budget-meter";
 import { REVIEW_PART, type ReviewPartData } from "./review-summary";
 import { INVALID_WORKSPACE_MESSAGE, type WorkspaceRoute } from "./workspace";
 import {
@@ -12,6 +20,7 @@ import {
   Empty,
   InputArea,
   LinkButton,
+  Meter,
   PoweredByCloudflare,
   Surface,
   Switch,
@@ -34,6 +43,7 @@ import {
   BugIcon,
   CircleNotchIcon,
   FileMagnifyingGlassIcon,
+  GaugeIcon,
   LinkBreakIcon,
   ListChecksIcon,
   LockIcon,
@@ -393,18 +403,74 @@ function ToolPartView({
 
 // ── Main chat ─────────────────────────────────────────────────────────
 
+// Bar colours by tone; "ok" keeps the Meter's brand colour
+const TONE_INDICATOR: Record<MeterTone, string> = {
+  ok: "",
+  low: "from-kumo-warning via-kumo-warning to-kumo-warning",
+  empty: ""
+};
+const TONE_TRACK: Record<MeterTone, string> = {
+  ok: "",
+  low: "",
+  empty: "bg-kumo-danger-tint"
+};
+
+function BudgetGauge({ label, percent }: { label: string; percent: number }) {
+  const tone = meterTone(percent);
+  return (
+    <Meter
+      label={label}
+      value={percent}
+      customValue={`${percent}% left`}
+      indicatorClassName={TONE_INDICATOR[tone]}
+      trackClassName={TONE_TRACK[tone]}
+    />
+  );
+}
+
+/**
+ * The shared budget meter, pushed by the server as agent state (D27). It
+ * sits above the review box and the chat input: the two things it pays for.
+ */
+function BudgetMeterCard({ meter }: { meter: BudgetMeter | null }) {
+  const current = currentMeter(meter, new Date());
+  if (!current) return null;
+  return (
+    <section
+      aria-label="Shared AI budget today"
+      title={budgetMeterText(current)}
+      className="mb-3 rounded-xl border border-kumo-line bg-kumo-elevated px-3 py-2.5"
+    >
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-0.5">
+        <span className="flex items-center gap-1.5 text-xs font-medium text-kumo-default">
+          <GaugeIcon size={14} />
+          Shared AI budget today
+        </span>
+        <span className="text-xs text-kumo-subtle">
+          Resets 05:30 IST (00:00 UTC)
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-x-6">
+        <BudgetGauge label="Reviews" percent={current.reviews} />
+        <BudgetGauge label="Chat" percent={current.chat} />
+      </div>
+    </section>
+  );
+}
+
 function Chat({ workspaceId }: { workspaceId: string }) {
   const [connected, setConnected] = useState(false);
   const [input, setInput] = useState("");
   const [showDebug, setShowDebug] = useState(false);
   // Pushed by the server as agent state; the browser never writes it
   const [rules, setRules] = useState<ResolvedRules | null>(null);
+  const [budget, setBudget] = useState<BudgetMeter | null>(null);
   const [showRules, setShowRules] = useState(false);
   const rulesPanelRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const agent = useAgent<ChatAgent, ResolvedRules>({
+  const agent = useAgent<ChatAgent, WorkspaceState>({
     agent: "ChatAgent",
     name: workspaceId,
     onOpen: useCallback(() => setConnected(true), []),
@@ -413,7 +479,10 @@ function Chat({ workspaceId }: { workspaceId: string }) {
       (error: Event) => console.error("WebSocket error:", error),
       []
     ),
-    onStateUpdate: useCallback((state: ResolvedRules) => setRules(state), [])
+    onStateUpdate: useCallback((state: WorkspaceState) => {
+      setRules(state);
+      setBudget(state.budget ?? null);
+    }, [])
   });
 
   // Close the rules panel when clicking outside it
@@ -644,6 +713,7 @@ function Chat({ workspaceId }: { workspaceId: string }) {
       {/* Input */}
       <div className="border-t border-kumo-line bg-kumo-base">
         <div className="max-w-3xl mx-auto px-5 pt-4">
+          <BudgetMeterCard meter={budget} />
           <details className="rounded-xl border border-kumo-line">
             <summary className="flex cursor-pointer select-none items-center gap-2 px-3 py-2 text-sm font-medium text-kumo-default">
               <FileMagnifyingGlassIcon size={16} />

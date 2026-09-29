@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   assertReserved,
   budgetDay,
+  budgetLeft,
   chatTurnAllowed,
   DAILY_CHAT_LIMIT_MESSAGE,
   DAILY_CHAT_NEURONS,
   DAILY_LIMIT_MESSAGE,
   DAILY_REVIEW_NEURONS,
   DailyLimitError,
+  percentLeft,
   REVIEW_BUSY_MESSAGE,
   reserveBudget,
   ReviewBusyError,
@@ -175,6 +177,51 @@ describe("chatTurnAllowed (D26)", () => {
 
   it("leaves 1,000 of the Free plan's 10,000 for overshoot and testing", () => {
     expect(DAILY_REVIEW_NEURONS + DAILY_CHAT_NEURONS).toBe(9_000);
+  });
+});
+
+describe("percentLeft", () => {
+  it("is 100 before anything is used, and 0 at the cap", () => {
+    expect(percentLeft(0, 6_000)).toBe(100);
+    expect(percentLeft(6_000, 6_000)).toBe(0);
+  });
+
+  it("rounds down, so it never shows more than is left", () => {
+    expect(percentLeft(1, 6_000)).toBe(99);
+    expect(percentLeft(5_999, 6_000)).toBe(0);
+    expect(percentLeft(1_500, 6_000)).toBe(75);
+  });
+
+  it("is 0, not negative, when spend has passed the cap", () => {
+    expect(percentLeft(6_500, 6_000)).toBe(0);
+  });
+});
+
+describe("budgetLeft", () => {
+  it("counts running reviews' reservations as used", () => {
+    const { ledger } = memoryLedger(600);
+    reserveBudget(ledger, "r1", 900, 6_000);
+    expect(budgetLeft(ledger, 6_000, 3_000).reviews).toBe(75);
+  });
+
+  it("gives the room back when a review settles below its reservation", () => {
+    const { ledger } = memoryLedger();
+    reserveBudget(ledger, "r1", 3_000, 6_000);
+    expect(budgetLeft(ledger, 6_000, 3_000).reviews).toBe(50);
+    settleBudget(ledger, "r1", 300);
+    expect(budgetLeft(ledger, 6_000, 3_000).reviews).toBe(95);
+  });
+
+  it("reports chat apart from reviews", () => {
+    const { ledger } = memoryLedger(6_000, 750);
+    expect(budgetLeft(ledger, 6_000, 3_000)).toEqual({ reviews: 0, chat: 75 });
+  });
+
+  it("uses the day's caps by default", () => {
+    expect(budgetLeft(memoryLedger(600, 300).ledger)).toEqual({
+      reviews: 90,
+      chat: 90
+    });
   });
 });
 
