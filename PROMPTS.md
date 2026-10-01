@@ -409,3 +409,15 @@ Write D31
 ````text
 D32 and D33 are approved. One condition on D32: the written-out-call replacement must be narrow. Replace a reply only if it parses as a call to one of our tool names, never on a loose text match. Add a test that a normal reply containing a code example is left alone.
 ````
+
+### 2026-10-01 12:20 UTC
+
+````text
+I want you to analyse and see if you can fix the streaming issue so as to remove the middleware wrapped around the model and allow streaming
+````
+
+### 2026-10-01 18:25 UTC
+
+````text
+D34 is approved, write it then commit. Next focus on the pending states of each actions and see how they can be improved in UI. Also reject any diff chat box immediately and ask to paste in review box. Right now it review the code and then says to paste in review box. Keep the review box open by default
+````

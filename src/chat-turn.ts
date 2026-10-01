@@ -226,31 +226,93 @@ function refusalsIn(prompt: readonly { role: string; content: unknown }[]) {
   });
 }
 
+// The parts a model streams; `ai` doesn't export their type
+type StreamPart =
+  Awaited<
+    ReturnType<
+      Parameters<
+        NonNullable<LanguageModelMiddleware["wrapStream"]>
+      >[0]["doStream"]
+    >
+  >["stream"] extends ReadableStream<infer Part>
+    ? Part
+    : never;
+type TextPart = Extract<
+  StreamPart,
+  { type: "text-start" | "text-delta" | "text-end" }
+>;
+
+const isTextPart = (part: StreamPart): part is TextPart =>
+  part.type === "text-start" ||
+  part.type === "text-delta" ||
+  part.type === "text-end";
+
+/**
+ * Passes a reply through as it streams, except that its text is held back
+ * while it could still be a written-out call, which starts with "{". At the
+ * end, a held reply that is a call is replaced with `replacement()`, and
+ * any other is released as it was. Every part that isn't text passes
+ * straight through (D34).
+ */
+function replaceWrittenCall(
+  replacement: () => string
+): TransformStream<StreamPart, StreamPart> {
+  // null once the reply can't be a call, and streams as it comes
+  let held: TextPart[] | null = [];
+  let text = "";
+  const release = (
+    controller: TransformStreamDefaultController<StreamPart>
+  ) => {
+    for (const part of held ?? []) controller.enqueue(part);
+    held = null;
+  };
+  return new TransformStream({
+    transform(part, controller) {
+      if (held === null) return controller.enqueue(part);
+      if (isTextPart(part)) {
+        held.push(part);
+        if (part.type === "text-delta") {
+          text += part.delta;
+          const start = text.trimStart();
+          if (start !== "" && !start.startsWith("{")) release(controller);
+        }
+        return;
+      }
+      if (part.type === "finish") {
+        if (isWrittenToolCall(text)) {
+          const id = held[0]?.id ?? "nothing-changed";
+          held = [
+            { type: "text-start", id },
+            { type: "text-delta", id, delta: replacement() },
+            { type: "text-end", id }
+          ];
+        }
+        release(controller);
+      }
+      controller.enqueue(part);
+    },
+    // A stream cut off before its finish part keeps what it had
+    flush: release
+  });
+}
+
 /**
  * In a step with no tools, Llama sometimes writes a tool call out as text
  * instead of explaining, even when told not to (D32). A reply that is only
  * such a call is replaced with "Nothing changed." and the refusals it should
  * have explained, so the user never sees a raw call. Any other reply is
- * left as it is.
+ * left as it is, and streams as it arrives (D34).
  */
 export const noToolCallsAsText: LanguageModelMiddleware = {
   specificationVersion: "v3",
-  wrapGenerate: async ({ doGenerate, params }) => {
-    const result = await doGenerate();
+  wrapStream: async ({ doStream, params }) => {
+    const result = await doStream();
     if (params.tools?.length) return result;
-    const text = result.content
-      .flatMap((part) => (part.type === "text" ? [part.text] : []))
-      .join("");
-    if (!isWrittenToolCall(text)) return result;
-    const reasons = [...new Set(refusalsIn(params.prompt))];
+    const nothingChanged = () =>
+      ["Nothing changed.", ...new Set(refusalsIn(params.prompt))].join(" ");
     return {
       ...result,
-      content: [
-        {
-          type: "text",
-          text: ["Nothing changed.", ...reasons].join(" ")
-        }
-      ]
+      stream: result.stream.pipeThrough(replaceWrittenCall(nothingChanged))
     };
   }
 };

@@ -156,6 +156,7 @@ One entry per design decision: what was decided, the options, and why. Newest la
 
 ## D20 - The chat model is called without token streaming
 
+- **Status:** Superseded by D34.
 - **Context:** When streaming, Workers AI sends each llama-3.3 delta twice in one chunk: in the native field (`response`, `tool_calls`) and in `choices[0].delta`. workers-ai-provider 3.3.1 reads both, so every streamed reply was doubled. Text came out repeated, and tool-call arguments stopped being valid JSON, so every rule change failed before the approval step. 4.0.0 and the provider's main branch have the same code, and 4.0.0 needs AI SDK 7.
 - **Options:** (a) patch the provider with patch-package; (b) switch the chat model to GLM-4.7-Flash, whose tool calls arrive intact; (c) upgrade to workers-ai-provider 4.0.0; (d) wrap the model in the AI SDK's `simulateStreamingMiddleware`, so each call is non-streaming and the provider reads tool calls from one field or the other.
 - **Decision:** (d).
@@ -297,3 +298,15 @@ One entry per design decision: what was decided, the options, and why. Newest la
   - The prompt line becomes "If a call is refused, read why: if you can fix the call, try once more; otherwise tell the user why in one sentence."
 - **Why:** Most refusals name their fix: longer text, the real IDs (in the error and the schema), dropping a duplicate. A retry that would be refused again is refused at once with no card (D30), and one that could pass waits for a person as usual. Counting across approval continuations bounds retries to one per user message, so D28's loop can't come back through approvals.
 - **Consequences:** A refused turn costs up to two extra model calls, about 60-80 neurons, instead of one. A model that repeats the same call wastes its retry, as the replays show. Refusals that need the user (a reason that isn't theirs, a locked rule) rely on the note and the error text to stop a retry; a retry anyway is refused at once and the next step explains. D29's "A rule refused in a batch is reported, not retried" no longer holds.
+
+## D34 - The chat model streams, through a binding that keeps one copy of each delta
+
+- **Context:** D20 turned streaming off because Workers AI sends each llama-3.3 delta twice in one chunk and workers-ai-provider 3.3.1 reads both. No release fixes it: 4.0.0 has the same code and needs AI SDK 7, and the fix (cloudflare/ai#663) is open. Recorded streams show the native tool-call copy is also lossy: it has no `id` or `index`, and the fragment `" 50"` arrives as the number `50`. Each chunk carries its own usage, and the last carries the totals.
+- **Options:** (a) keep D20; (b) patch the provider, with patch-package or a fork carrying #663; (c) wrap the AI binding so the stream the provider reads has one copy of each delta.
+- **Decision:** (c).
+  - `singleCopyStreams(env.AI)` rewrites each streamed reply line by line. A chunk's native `response` is dropped when `choices[0].delta.content` is non-empty, and its native `tool_calls` when `choices[0].delta.tool_calls` is non-empty. Everything else passes through.
+  - `simulateStreamingMiddleware` is removed. `omitEmptyTools` stays.
+  - The D32 check works on the stream: in a step with no tools, a reply that starts with `{` is held back until it ends, and every other reply streams as it arrives.
+  - Only the chat model's binding is wrapped. The review model doesn't stream.
+- **Why:** Fixing the provider's input patches no built file and adds no dependency. It keeps the copy #663 keeps, which has the IDs and the model's own text, so it changes nothing once the provider reads one copy. Replies appear token by token instead of after a blank wait.
+- **Consequences:** D20 is superseded. Tests run the real provider over three recorded streams, split into pieces as small as 1 byte, and one test pins the provider bug: when it fails, the wrapper can go. Measured locally: a reply in 61 pieces, a tool call in 11 that parsed, an approved switch-off, and the turn charged. Charging relies on the last usage chunk carrying the totals, which the recorded streams pin. In a step with no tools, a reply that starts with `{` appears all at once.

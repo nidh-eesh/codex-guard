@@ -155,13 +155,14 @@ async function turn(
     noToolsReply
   );
   const result = streamText({
+    // The mock answers whole, and simulateStreamingMiddleware streams it,
+    // as Workers AI does; around it, the agent's own middleware (D34)
     model: wrapLanguageModel({
-      model,
-      middleware: [
-        simulateStreamingMiddleware(),
-        omitEmptyTools,
-        noToolCallsAsText
-      ]
+      model: wrapLanguageModel({
+        model,
+        middleware: simulateStreamingMiddleware()
+      }),
+      middleware: [omitEmptyTools, noToolCallsAsText]
     }),
     system: SYSTEM,
     messages,

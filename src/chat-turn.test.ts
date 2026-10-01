@@ -7,7 +7,11 @@ import {
   type LanguageModelUsage,
   type UIMessage
 } from "ai";
-import { MockLanguageModelV3 } from "ai/test";
+import {
+  convertArrayToReadableStream,
+  convertReadableStreamToArray,
+  MockLanguageModelV3
+} from "ai/test";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
@@ -267,25 +271,47 @@ describe("noToolCallsAsText (D32)", () => {
       ]
     }
   ];
-  const reply = async (text: string, params: Record<string, unknown>) => {
-    const result = await noToolCallsAsText.wrapGenerate!({
-      doGenerate: async () =>
-        ({
-          content: [{ type: "text", text }],
-          finishReason: { unified: "stop", raw: "stop" },
-          usage: {},
-          warnings: []
-        }) as never,
-      doStream: async () => {
+  type Part = { type: string; id?: string; delta?: string };
+  const finish = {
+    type: "finish",
+    finishReason: { unified: "stop", raw: "stop" },
+    usage: {}
+  };
+  /** A reply as the model streams it: a few characters per delta. */
+  const streamed = (text: string): Part[] => [
+    { type: "stream-start" },
+    { type: "text-start", id: "t1" },
+    ...(text.match(/[\s\S]{1,4}/g) ?? []).map((delta) => ({
+      type: "text-delta",
+      id: "t1",
+      delta
+    })),
+    { type: "text-end", id: "t1" },
+    finish
+  ];
+  /** The guard's stream over `source`, for a step with these params. */
+  const guarded = async (
+    source: ReadableStream<Part>,
+    params: Record<string, unknown>
+  ) => {
+    const result = await noToolCallsAsText.wrapStream!({
+      doGenerate: async () => {
         throw new Error("not used");
       },
+      doStream: async () => ({ stream: source }) as never,
       params: params as never,
       model: {} as never
     });
-    return result.content
-      .map((part) => ("text" in part ? part.text : ""))
-      .join("");
+    return result.stream as unknown as ReadableStream<Part>;
   };
+  const partsOf = async (text: string, params: Record<string, unknown>) =>
+    convertReadableStreamToArray(
+      await guarded(convertArrayToReadableStream(streamed(text)), params)
+    );
+  const reply = async (text: string, params: Record<string, unknown>) =>
+    (await partsOf(text, params))
+      .flatMap((part) => (part.type === "text-delta" ? [part.delta] : []))
+      .join("");
 
   it("replaces a tool call written out as text with the refusal: the Random rule 8 reply", async () => {
     const written =
@@ -349,6 +375,63 @@ describe("noToolCallsAsText (D32)", () => {
         prompt: prompt({ type: "error-text", value: refusal })
       })
     ).toBe(withExample);
+  });
+
+  it("streams a reply that can't be a call as it arrives (D34)", async () => {
+    let source!: ReadableStreamDefaultController<Part>;
+    const out = (
+      await guarded(
+        new ReadableStream<Part>({ start: (c) => void (source = c) }),
+        { prompt: prompt({ type: "error-text", value: refusal }) }
+      )
+    ).getReader();
+    source.enqueue({ type: "stream-start" });
+    source.enqueue({ type: "text-start", id: "t1" });
+    source.enqueue({ type: "text-delta", id: "t1", delta: "A rule" });
+    // Read before the reply has finished: the text is already through
+    expect((await out.read()).value?.type).toBe("stream-start");
+    expect((await out.read()).value?.type).toBe("text-start");
+    expect((await out.read()).value).toMatchObject({ delta: "A rule" });
+  });
+
+  it("holds back a reply that starts like a call, and releases it whole if it isn't one (D34)", async () => {
+    const notACall = '{"rules": []} is the shape addRule takes.';
+    const parts = await partsOf(notACall, {
+      prompt: prompt({ type: "error-text", value: refusal })
+    });
+    expect(parts.map((part) => part.type)).toEqual(
+      streamed(notACall).map((part) => part.type)
+    );
+    expect(
+      parts.flatMap((part) => (part.delta ? [part.delta] : [])).join("")
+    ).toBe(notACall);
+  });
+
+  it("replaces a call with one text block, before the finish part (D34)", async () => {
+    const parts = await partsOf('{"name": "listRules", "parameters": {}}', {
+      prompt: prompt({ type: "execution-denied" })
+    });
+    expect(parts).toEqual([
+      { type: "stream-start" },
+      { type: "text-start", id: "t1" },
+      {
+        type: "text-delta",
+        id: "t1",
+        delta: "Nothing changed. The change was rejected."
+      },
+      { type: "text-end", id: "t1" },
+      finish
+    ]);
+  });
+
+  it("keeps the text it held when the stream ends without finishing", async () => {
+    const cutOff = streamed('{"name": "listRules"').slice(0, -2);
+    const parts = await convertReadableStreamToArray(
+      await guarded(convertArrayToReadableStream(cutOff), {
+        prompt: prompt({ type: "execution-denied" })
+      })
+    );
+    expect(parts).toEqual(cutOff);
   });
 });
 

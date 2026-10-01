@@ -7,7 +7,7 @@ import {
   type ConnectionContext
 } from "agents";
 import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
-import { simulateStreamingMiddleware, streamText, wrapLanguageModel } from "ai";
+import { streamText, wrapLanguageModel } from "ai";
 import { MODEL } from "./model-config";
 import { withReferrerPolicy } from "./http";
 import { rejectAgentRoute } from "./workspace";
@@ -22,6 +22,7 @@ import {
 import { sqliteRuleTables } from "./rule-tables";
 import { approvedPendingIds, ruleTools, toolErrorTexts } from "./rule-tools";
 import { sqliteUnapprovedCalls } from "./tool-approval";
+import { singleCopyStreams } from "./workers-ai-stream";
 import { checkDiff } from "./diff-input";
 import { unfinishedReview } from "./review-combine";
 import { sqliteReviews } from "./review-store";
@@ -233,7 +234,11 @@ export class ChatAgent extends AIChatAgent<Env, WorkspaceState> {
       }
     }
 
-    const workersai = createWorkersAI({ binding: this.env.AI });
+    // Workers AI streams each delta twice and the provider reads both; the
+    // binding keeps one copy, so replies stream token by token (D34)
+    const workersai = createWorkersAI({
+      binding: singleCopyStreams(this.env.AI)
+    });
     // Server-defined tools only: options.clientTools never reaches the model
     // Each turn's tools list the rule IDs they can change now (D31)
     const tools = ruleTools(
@@ -244,19 +249,11 @@ export class ChatAgent extends AIChatAgent<Env, WorkspaceState> {
     );
 
     const result = streamText({
-      // workers-ai-provider 3.3.1 doubles streamed tool-call arguments for
-      // this model: each chunk carries the same delta in `tool_calls` and in
-      // `choices[0].delta.tool_calls`, and it reads both. A non-streaming
-      // call reads one or the other, so tool calls arrive intact.
       model: wrapLanguageModel({
         model: workersai(MODEL.id, {
           sessionAffinity: this.sessionAffinity
         }),
-        middleware: [
-          simulateStreamingMiddleware(),
-          omitEmptyTools,
-          noToolCallsAsText
-        ]
+        middleware: [omitEmptyTools, noToolCallsAsText]
       }),
       maxOutputTokens: MODEL.maxOutputTokens,
       system: SYSTEM_PROMPT,
