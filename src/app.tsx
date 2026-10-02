@@ -15,6 +15,7 @@ import {
 } from "./budget-meter";
 import { REVIEW_PART, type ReviewPartData } from "./review-summary";
 import { toolProgress, waitingForModel } from "./chat-status";
+import { MODEL, modelDocsUrl } from "./model-config";
 import { DIFF_IN_CHAT_MESSAGE, looksLikeDiff } from "./diff-input";
 import { INVALID_WORKSPACE_MESSAGE, type WorkspaceRoute } from "./workspace";
 import {
@@ -45,6 +46,7 @@ import {
   XCircleIcon,
   BugIcon,
   CircleNotchIcon,
+  CpuIcon,
   FileMagnifyingGlassIcon,
   GaugeIcon,
   LinkBreakIcon,
@@ -539,6 +541,25 @@ const CONNECTION = {
   reconnecting: { label: "Reconnecting...", tone: "text-kumo-danger" }
 } as const;
 
+/**
+ * The model behind both the chat and the reviews, named from the model
+ * config and linked to its Workers AI page; the full ID is in the tooltip.
+ */
+function ModelInfo() {
+  return (
+    <a
+      href={modelDocsUrl(MODEL)}
+      target="_blank"
+      rel="noreferrer"
+      title={`${MODEL.id}: answers the chat and reviews diffs`}
+      className="flex items-center gap-1.5 rounded-full border border-kumo-line px-2.5 py-1 text-xs text-kumo-subtle hover:text-kumo-default"
+    >
+      <CpuIcon size={14} className="shrink-0" />
+      <span>Model: {MODEL.name}</span>
+    </a>
+  );
+}
+
 /** The model is working, with nothing of it on screen yet. */
 function ThinkingBubble() {
   return (
@@ -989,7 +1010,8 @@ function Chat({ workspaceId }: { workspaceId: string }) {
             )}
           </div>
         </form>
-        <div className="flex justify-center pb-3">
+        <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 px-5 pb-3">
+          <ModelInfo />
           <PoweredByCloudflare href="https://developers.cloudflare.com/agents/" />
         </div>
       </div>

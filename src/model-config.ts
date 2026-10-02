@@ -10,6 +10,8 @@
 export interface ModelConfig {
   /** Workers AI model ID. */
   readonly id: keyof AiModels;
+  /** The model's name, as the UI shows it. */
+  readonly name: string;
   /** Tokens per call, prompt and answer together. */
   readonly contextWindow: number;
   /**
@@ -23,8 +25,14 @@ export interface ModelConfig {
 
 export const MODEL = {
   id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+  name: "Llama 3.3 70B Instruct (FP8, fast)",
   contextWindow: 24_000,
   maxOutputTokens: 3_000,
   neuronsPerMillionInputTokens: 26_668,
   neuronsPerMillionOutputTokens: 204_805
 } as const satisfies ModelConfig;
+
+/** The model's page in the Workers AI docs, named after the last part of its ID. */
+export function modelDocsUrl(model: Pick<ModelConfig, "id">): string {
+  return `https://developers.cloudflare.com/workers-ai/models/${model.id.split("/").at(-1)}/`;
+}
