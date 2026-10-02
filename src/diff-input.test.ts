@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { checkDiff, DiffError, MAX_DIFF_BYTES } from "./diff-input";
+import {
+  checkDiff,
+  DIFF_IN_CHAT_MESSAGE,
+  DiffError,
+  looksLikeDiff,
+  MAX_DIFF_BYTES
+} from "./diff-input";
 
 const DIFF = `diff --git a/src/app.ts b/src/app.ts
 --- a/src/app.ts
@@ -72,6 +78,39 @@ describe("checkDiff", () => {
   it("checks size before format, so a huge paste gets the size message", () => {
     expect(refusal("x".repeat(60_000))).toBe(
       "The diff is larger than 50 KB. Split it into smaller reviews."
+    );
+  });
+});
+
+describe("looksLikeDiff (D35)", () => {
+  it("is true for anything the review box would take as a diff", () => {
+    expect(looksLikeDiff(DIFF)).toBe(true);
+    expect(checkDiff(DIFF)).toBe(DIFF);
+    const hunkOnly = "@@ -1 +1 @@\n-a\n+b";
+    expect(looksLikeDiff(hunkOnly)).toBe(true);
+    expect(checkDiff(hunkOnly)).toBe(hunkOnly);
+  });
+
+  it("is true for a diff with text around it, or a git header alone", () => {
+    expect(looksLikeDiff(`Can you review this?\n\n${DIFF}`)).toBe(true);
+    expect(looksLikeDiff("```diff\n" + DIFF + "```")).toBe(true);
+    expect(looksLikeDiff("diff --git a/x b/x\nnew file mode 100644")).toBe(
+      true
+    );
+  });
+
+  it("is false for chat that only mentions a diff", () => {
+    expect(looksLikeDiff("What does @@ -1,2 +1,2 @@ mean in a diff?")).toBe(
+      false
+    );
+    expect(looksLikeDiff("Run `diff --git` and paste it where?")).toBe(false);
+    expect(looksLikeDiff("Switch off no-console-log, we use pino")).toBe(false);
+    expect(looksLikeDiff("- one\n- two\n+ three")).toBe(false);
+  });
+
+  it("asks for the review box in the DESIGN.md section 5 words", () => {
+    expect(DIFF_IN_CHAT_MESSAGE).toBe(
+      "That looks like a diff. Paste it in the review box to review it."
     );
   });
 });

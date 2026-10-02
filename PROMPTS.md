@@ -421,3 +421,12 @@ I want you to analyse and see if you can fix the streaming issue so as to remove
 ````text
 D34 is approved, write it then commit. Next focus on the pending states of each actions and see how they can be improved in UI. Also reject any diff chat box immediately and ask to paste in review box. Right now it review the code and then says to paste in review box. Keep the review box open by default
 ````
+
+### 2026-10-02 03:42 UTC
+
+````text
+D35 is approved. Commit it. Then check two things live:
+1. Press Stop in the middle of a streamed reply. The turn must be charged exactly once, for the steps it finished, so the meter changes once.
+2. The full demo script in a fresh workspace: "Remove all unlocked rules, we use our own linting", approve the card, then review fixtures/reviews/key-and-sql.diff. Report each result.
+Also add a component to the model used in UI.
+````

@@ -11,6 +11,7 @@ import {
   type UIMessage
 } from "ai";
 import { z } from "zod";
+import { looksLikeDiff } from "./diff-input";
 import type { ModelConfig } from "./model-config";
 import { callNeurons } from "./review-cost";
 import { stripReviewDetails } from "./review-summary";
@@ -19,13 +20,45 @@ import { RULE_TOOL_NAMES } from "./rule-tools";
 /** How many of the latest messages the chat model sees each turn (D26). */
 export const CHAT_HISTORY_MESSAGES = 10;
 
+/** What the chat model sees in place of a diff a user sent to the chat. */
+export const DIFF_PLACEHOLDER =
+  "(A diff was pasted here. Diffs go in the review box, so it was refused.)";
+
+/** The text of a user's message. */
+export function userTextOf(message: UIMessage): string {
+  return message.parts
+    .flatMap((part) => (part.type === "text" ? [part.text] : []))
+    .join("\n");
+}
+
+/**
+ * A user's message with any diff replaced by DIFF_PLACEHOLDER. The SDK
+ * saves a message before the agent can refuse it, so a refused diff stays
+ * in the history; this keeps it from the model on later turns too (D35).
+ */
+function withoutDiff(message: UIMessage): UIMessage {
+  if (message.role !== "user" || !looksLikeDiff(userTextOf(message))) {
+    return message;
+  }
+  return {
+    ...message,
+    parts: [
+      ...message.parts.filter((part) => part.type !== "text"),
+      { type: "text", text: DIFF_PLACEHOLDER }
+    ]
+  };
+}
+
 /**
  * The history sent to the chat model: the latest CHAT_HISTORY_MESSAGES
- * messages, each review reduced to its summary (D9). A tool call and its
- * result are parts of one message, so the cut never separates them.
+ * messages, each review reduced to its summary (D9) and each diff a user
+ * sent replaced (D35). A tool call and its result are parts of one
+ * message, so the cut never separates them.
  */
 export function chatHistory(messages: readonly UIMessage[]): UIMessage[] {
-  return stripReviewDetails(messages.slice(-CHAT_HISTORY_MESSAGES));
+  return stripReviewDetails(messages.slice(-CHAT_HISTORY_MESSAGES)).map(
+    withoutDiff
+  );
 }
 
 /**

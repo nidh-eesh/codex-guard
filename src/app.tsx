@@ -14,6 +14,8 @@ import {
   type MeterTone
 } from "./budget-meter";
 import { REVIEW_PART, type ReviewPartData } from "./review-summary";
+import { toolProgress, waitingForModel } from "./chat-status";
+import { DIFF_IN_CHAT_MESSAGE, looksLikeDiff } from "./diff-input";
 import { INVALID_WORKSPACE_MESSAGE, type WorkspaceRoute } from "./workspace";
 import {
   Badge,
@@ -275,9 +277,10 @@ function ToolPartView({
 }) {
   if (!isToolUIPart(part)) return null;
   const toolName = getToolName(part);
+  const progress = toolProgress(part);
 
   // Completed
-  if (part.state === "output-available") {
+  if (progress === "done") {
     return (
       <div className="flex justify-start">
         <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
@@ -296,7 +299,7 @@ function ToolPartView({
   }
 
   // Needs approval
-  if ("approval" in part && part.state === "approval-requested") {
+  if (progress === "awaiting-approval" && "approval" in part) {
     const approvalId = (part.approval as { id?: string })?.id;
     const description = describeRuleChange(toolName, part.input, rules);
     // The server's own checks, run on the rules this page has: a call where
@@ -342,6 +345,12 @@ function ToolPartView({
               {JSON.stringify(part.input, null, 2)}
             </Text>
           </div>
+          {rules === null && (
+            <p className="mb-2 flex items-center gap-1.5 text-xs text-kumo-subtle">
+              <CircleNotchIcon size={12} className="animate-spin" />
+              Loading the workspace's rules to check this change...
+            </p>
+          )}
           <div className="flex gap-2">
             <Button
               variant="primary"
@@ -374,12 +383,39 @@ function ToolPartView({
     );
   }
 
+  // Approved, and waiting for the server to apply it
+  if (progress === "applying") {
+    const description = describeRuleChange(toolName, part.input, rules);
+    return (
+      <div className="flex justify-start">
+        <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
+          <div className="flex items-center gap-2">
+            <CircleNotchIcon
+              size={14}
+              className="text-kumo-inactive animate-spin"
+            />
+            <Text size="xs" variant="secondary" bold>
+              {toolName}
+            </Text>
+            <Badge variant="secondary">Approved</Badge>
+            <Text size="xs" variant="secondary">
+              Applying...
+            </Text>
+          </div>
+          {description.length > 0 && (
+            <ul className="mt-1.5 space-y-0.5 text-sm text-kumo-default">
+              {description.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          )}
+        </Surface>
+      </div>
+    );
+  }
+
   // Rejected / denied
-  if (
-    part.state === "output-denied" ||
-    ("approval" in part &&
-      (part.approval as { approved?: boolean })?.approved === false)
-  ) {
+  if (progress === "rejected") {
     return (
       <div className="flex justify-start">
         <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
@@ -396,7 +432,7 @@ function ToolPartView({
   }
 
   // Errored
-  if (part.state === "output-error") {
+  if (progress === "failed" && part.state === "output-error") {
     const errorText = part.errorText;
     return (
       <div className="flex justify-start">
@@ -418,24 +454,23 @@ function ToolPartView({
     );
   }
 
-  // Executing
-  if (part.state === "input-available" || part.state === "input-streaming") {
-    return (
-      <div className="flex justify-start">
-        <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
-          <div className="flex items-center gap-2">
-            <GearIcon size={14} className="text-kumo-inactive animate-spin" />
-            <Text size="xs" variant="secondary">
-              Running {toolName}...
-            </Text>
-          </div>
-          <ToolIO label="Input" value={part.input} />
-        </Surface>
-      </div>
-    );
-  }
-
-  return null;
+  // The model is still writing the call, or the server is running it. A
+  // call's input is shown only once it's whole
+  return (
+    <div className="flex justify-start">
+      <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
+        <div className="flex items-center gap-2">
+          <GearIcon size={14} className="text-kumo-inactive animate-spin" />
+          <Text size="xs" variant="secondary">
+            {progress === "preparing"
+              ? `Preparing ${toolName}...`
+              : `Running ${toolName}...`}
+          </Text>
+        </div>
+        {progress === "running" && <ToolIO label="Input" value={part.input} />}
+      </Surface>
+    </div>
+  );
 }
 
 // ── Main chat ─────────────────────────────────────────────────────────
@@ -495,9 +530,53 @@ function BudgetMeterCard({ meter }: { meter: BudgetMeter | null }) {
   );
 }
 
+// The socket reconnects by itself after a drop
+type Connection = "connecting" | "connected" | "reconnecting";
+
+const CONNECTION = {
+  connecting: { label: "Connecting...", tone: "text-kumo-warning" },
+  connected: { label: "Connected", tone: "text-kumo-success" },
+  reconnecting: { label: "Reconnecting...", tone: "text-kumo-danger" }
+} as const;
+
+/** The model is working, with nothing of it on screen yet. */
+function ThinkingBubble() {
+  return (
+    <output className="flex justify-start">
+      <div className="flex items-center gap-2 rounded-2xl rounded-bl-md bg-kumo-base px-4 py-2.5 text-sm text-kumo-subtle">
+        <CircleNotchIcon size={14} className="animate-spin" />
+        Thinking...
+      </div>
+    </output>
+  );
+}
+
+/** Where a review's result will appear, while its workflow runs. */
+function ReviewPendingCard() {
+  return (
+    <output className="flex justify-start">
+      <div className="flex w-full max-w-[85%] items-center gap-2 rounded-xl bg-kumo-base px-4 py-3 ring ring-kumo-line">
+        <CircleNotchIcon
+          size={16}
+          className="animate-spin text-kumo-inactive"
+        />
+        <Text size="sm" bold>
+          Reviewing the diff...
+        </Text>
+        <Text size="xs" variant="secondary">
+          The result will appear here.
+        </Text>
+      </div>
+    </output>
+  );
+}
+
 function Chat({ workspaceId }: { workspaceId: string }) {
-  const [connected, setConnected] = useState(false);
+  const [connection, setConnection] = useState<Connection>("connecting");
+  const connected = connection === "connected";
   const [input, setInput] = useState("");
+  // Shown under the chat input; cleared when the input changes
+  const [chatNotice, setChatNotice] = useState<string | null>(null);
   const [showDebug, setShowDebug] = useState(false);
   // Pushed by the server as agent state; the browser never writes it
   const [rules, setRules] = useState<ResolvedRules | null>(null);
@@ -510,8 +589,8 @@ function Chat({ workspaceId }: { workspaceId: string }) {
   const agent = useAgent<ChatAgent, WorkspaceState>({
     agent: "ChatAgent",
     name: workspaceId,
-    onOpen: useCallback(() => setConnected(true), []),
-    onClose: useCallback(() => setConnected(false), []),
+    onOpen: useCallback(() => setConnection("connected"), []),
+    onClose: useCallback(() => setConnection("reconnecting"), []),
     onError: useCallback(
       (error: Event) => console.error("WebSocket error:", error),
       []
@@ -567,12 +646,19 @@ function Chat({ workspaceId }: { workspaceId: string }) {
   const send = useCallback(() => {
     const text = input.trim();
     if (!text || isStreaming) return;
+    // A diff never goes to the chat model; the server refuses one too (D35)
+    if (looksLikeDiff(text)) {
+      setChatNotice(DIFF_IN_CHAT_MESSAGE);
+      return;
+    }
     setInput("");
     sendMessage({ role: "user", parts: [{ type: "text", text }] });
     if (textareaRef.current) textareaRef.current.style.height = "auto";
   }, [input, isStreaming, sendMessage]);
 
   // The review box calls the agent directly; the diff never enters the chat (D8)
+  const [reviewOpen, setReviewOpen] = useState(true);
+  const reviewBoxRef = useRef<HTMLTextAreaElement>(null);
   const [diff, setDiff] = useState("");
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -599,6 +685,17 @@ function Chat({ workspaceId }: { workspaceId: string }) {
     }
   }, [agent, diff]);
 
+  // A diff typed into the chat moves to the review box in one click, unless
+  // the box already holds something it would replace
+  const canMoveToReview = chatNotice !== null && !diff.trim();
+  const moveToReview = useCallback(() => {
+    setDiff(input.trim());
+    setInput("");
+    setChatNotice(null);
+    setReviewOpen(true);
+    requestAnimationFrame(() => reviewBoxRef.current?.focus());
+  }, [input]);
+
   return (
     <div className="flex flex-col h-screen bg-kumo-elevated">
       {/* Header */}
@@ -617,11 +714,11 @@ function Chat({ workspaceId }: { workspaceId: string }) {
               <CircleIcon
                 size={8}
                 weight="fill"
-                className={connected ? "text-kumo-success" : "text-kumo-danger"}
+                className={CONNECTION[connection].tone}
               />
               <span className="sr-only sm:not-sr-only">
                 <Text size="xs" variant="secondary">
-                  {connected ? "Connected" : "Disconnected"}
+                  {CONNECTION[connection].label}
                 </Text>
               </span>
             </div>
@@ -747,6 +844,9 @@ function Chat({ workspaceId }: { workspaceId: string }) {
             );
           })}
 
+          {waitingForModel(status, messages) && <ThinkingBubble />}
+          {reviewing && <ReviewPendingCard />}
+
           <div ref={messagesEndRef} />
         </div>
       </div>
@@ -755,7 +855,11 @@ function Chat({ workspaceId }: { workspaceId: string }) {
       <div className="border-t border-kumo-line bg-kumo-base">
         <div className="max-w-3xl mx-auto px-5 pt-4">
           <BudgetMeterCard meter={budget} />
-          <details className="rounded-xl border border-kumo-line">
+          <details
+            open={reviewOpen}
+            onToggle={(e) => setReviewOpen(e.currentTarget.open)}
+            className="rounded-xl border border-kumo-line"
+          >
             <summary className="flex cursor-pointer select-none items-center gap-2 px-3 py-2 text-sm font-medium text-kumo-default">
               <FileMagnifyingGlassIcon size={16} />
               Review a diff
@@ -768,9 +872,10 @@ function Chat({ workspaceId }: { workspaceId: string }) {
             </summary>
             <div className="space-y-2 px-3 pb-3">
               <textarea
+                ref={reviewBoxRef}
                 value={diff}
                 onChange={(e) => setDiff(e.target.value)}
-                rows={8}
+                rows={5}
                 spellCheck={false}
                 aria-label="Diff to review"
                 placeholder="Paste the output of git diff"
@@ -784,11 +889,21 @@ function Chat({ workspaceId }: { workspaceId: string }) {
               <Button
                 variant="primary"
                 size="sm"
-                icon={<FileMagnifyingGlassIcon size={14} />}
+                icon={
+                  submitting ? (
+                    <CircleNotchIcon size={14} className="animate-spin" />
+                  ) : (
+                    <FileMagnifyingGlassIcon size={14} />
+                  )
+                }
                 onClick={submitReview}
                 disabled={!connected || submitting || reviewing || !diff.trim()}
               >
-                Review
+                {submitting
+                  ? "Starting..."
+                  : reviewing
+                    ? "Reviewing..."
+                    : "Review"}
               </Button>
             </div>
           </details>
@@ -800,16 +915,41 @@ function Chat({ workspaceId }: { workspaceId: string }) {
           }}
           className="max-w-3xl mx-auto px-5 py-4"
         >
-          {chatError && (
+          {chatError && !chatNotice && (
             <p role="alert" className="mb-2 text-sm text-kumo-danger">
               {chatError.message}
             </p>
+          )}
+          {chatNotice && (
+            <div
+              role="alert"
+              className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-kumo-danger"
+            >
+              <span className="flex items-center gap-1.5">
+                <WarningCircleIcon size={16} className="shrink-0" />
+                {chatNotice}
+              </span>
+              {canMoveToReview && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  icon={<FileMagnifyingGlassIcon size={14} />}
+                  onClick={moveToReview}
+                >
+                  Move it to the review box
+                </Button>
+              )}
+            </div>
           )}
           <div className="flex items-end gap-3 rounded-xl border border-kumo-line bg-kumo-base p-3 shadow-sm focus-within:ring-2 focus-within:ring-kumo-ring focus-within:border-transparent transition-shadow">
             <InputArea
               ref={textareaRef}
               value={input}
-              onValueChange={setInput}
+              onValueChange={(value) => {
+                setInput(value);
+                setChatNotice(null);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();

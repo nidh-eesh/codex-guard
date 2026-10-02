@@ -23,7 +23,7 @@ import { sqliteRuleTables } from "./rule-tables";
 import { approvedPendingIds, ruleTools, toolErrorTexts } from "./rule-tools";
 import { sqliteUnapprovedCalls } from "./tool-approval";
 import { singleCopyStreams } from "./workers-ai-stream";
-import { checkDiff } from "./diff-input";
+import { checkDiff, DIFF_IN_CHAT_MESSAGE, looksLikeDiff } from "./diff-input";
 import { unfinishedReview } from "./review-combine";
 import { sqliteReviews } from "./review-store";
 import { redactReview, reviewMessage } from "./review-summary";
@@ -33,7 +33,8 @@ import {
   chatStopWhen,
   chatTurnNeurons,
   noToolCallsAsText,
-  omitEmptyTools
+  omitEmptyTools,
+  userTextOf
 } from "./chat-turn";
 import type { ReviewResult } from "./review-types";
 import type { ReviewParams } from "./review-workflow";
@@ -218,6 +219,14 @@ export class ChatAgent extends AIChatAgent<Env, WorkspaceState> {
   }
 
   async onChatMessage(_onFinish: unknown, options?: OnChatMessageOptions) {
+    // A diff goes in the review box: refused before any model call, so it
+    // costs nothing. The browser refuses it first; this covers any client
+    // that sends one anyway (D35)
+    const latest = this.messages.at(-1);
+    if (latest?.role === "user" && looksLikeDiff(userTextOf(latest))) {
+      return chatErrorResponse(DIFF_IN_CHAT_MESSAGE);
+    }
+
     // Charged to the day the turn started on, like a review's reservation
     const budget = this.env.NEURON_BUDGET.getByName(budgetDay(new Date()));
 

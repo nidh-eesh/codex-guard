@@ -19,6 +19,7 @@ import {
   chatHistory,
   chatModelMessages,
   chatTurnNeurons,
+  DIFF_PLACEHOLDER,
   isWrittenToolCall,
   noToolCallsAsText
 } from "./chat-turn";
@@ -69,6 +70,38 @@ describe("chatHistory", () => {
     expect(history.at(-1)?.parts.some((p) => p.type === REVIEW_PART)).toBe(
       false
     );
+  });
+
+  it("never passes on a diff a user sent to the chat (D35)", async () => {
+    const diff = "Review this\n@@ -1 +1 @@\n-const a = 1;\n+const a = 2;";
+    const pasted: UIMessage = {
+      id: "u-diff",
+      role: "user",
+      parts: [{ type: "text", text: diff }]
+    };
+    const later: UIMessage = {
+      id: "u-next",
+      role: "user",
+      parts: [{ type: "text", text: "Which rules are on?" }]
+    };
+    const history = chatHistory([pasted, text("a1"), later]);
+    expect(history[0].parts).toEqual([
+      { type: "text", text: DIFF_PLACEHOLDER }
+    ]);
+    expect(history.slice(1)).toEqual([text("a1"), later]);
+    // What the model is sent holds no line of it
+    const sent = JSON.stringify(await chatModelMessages([pasted, later]));
+    expect(sent).not.toContain("@@");
+    expect(sent).not.toContain("const a");
+  });
+
+  it("leaves the model's own text alone, even if it shows a diff", () => {
+    const explained: UIMessage = {
+      id: "a-diff",
+      role: "assistant",
+      parts: [{ type: "text", text: "A hunk starts like this:\n@@ -1 +1 @@" }]
+    };
+    expect(chatHistory([explained])).toEqual([explained]);
   });
 });
 

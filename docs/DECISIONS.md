@@ -310,3 +310,16 @@ One entry per design decision: what was decided, the options, and why. Newest la
   - Only the chat model's binding is wrapped. The review model doesn't stream.
 - **Why:** Fixing the provider's input patches no built file and adds no dependency. It keeps the copy #663 keeps, which has the IDs and the model's own text, so it changes nothing once the provider reads one copy. Replies appear token by token instead of after a blank wait.
 - **Consequences:** D20 is superseded. Tests run the real provider over three recorded streams, split into pieces as small as 1 byte, and one test pins the provider bug: when it fails, the wrapper can go. Measured locally: a reply in 61 pieces, a tool call in 11 that parsed, an approved switch-off, and the turn charged. Charging relies on the last usage chunk carrying the totals, which the recorded streams pin. In a step with no tools, a reply that starts with `{` appears all at once.
+
+## D35 - The chat refuses a diff before the model sees it
+
+- **Context:** A diff pasted into the chat went to the chat model, which reviewed it and then said to use the review box. That model has the rule tools, so §7's guarantee that diffs never reach the chat model held only if people used the review box. The SDK saves a message before the agent can refuse it, so a refused message stays in the history the model reads later (§8).
+- **Options:** (a) a system-prompt line; (b) refuse in the browser only; (c) refuse in the browser and on the server before any model call, and replace any diff in the history the model sees.
+- **Decision:** (c).
+  - A diff is text with a line starting `@@ ` (what the review box needs) or `diff --git `. `looksLikeDiff` is shared by the browser and the server.
+  - The browser doesn't send it, shows "That looks like a diff. Paste it in the review box to review it.", and offers to move it into the review box when the box is empty.
+  - `onChatMessage` refuses it with the same message before any other check or model call, so it costs nothing.
+  - `chatHistory` replaces the text of a user message that looks like a diff with a placeholder.
+  - The review box is open by default.
+- **Why:** The WebSocket accepts any client, so the browser check is only a convenience and the server checks too. Replacing the diff in the history covers what refusing can't: the saved message. Using the review box's own test means anything it would review, the chat refuses.
+- **Consequences:** Measured locally: refused in the browser with nothing sent; a raw WebSocket request refused in 15 ms with no model call. Chat with a hunk header at the start of a line is refused; one mid-sentence isn't. Bare `+`/`-` lines with no headers still reach the model, like any pasted code. A refused diff isn't counted by the per-IP limit. A client that bypasses the browser still sees its diff in the chat.
